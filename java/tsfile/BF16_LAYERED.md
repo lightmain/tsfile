@@ -33,13 +33,16 @@ length, maps them through the bitmap, and accesses only overlapping streams.
 All-null native value pages have no payload and must be handled by the caller
 using the corresponding time-page row count.
 
+Current writers use the two-byte fine format documented at the end of this file.
+The original four-byte layout below is retained for backward reading compatibility.
+
 All integers and BF16 codes in the frame are big-endian. Offsets are relative to
 the beginning of the frame, after the native row count and bitmap.
 
 | Header field | Width | Value |
 |---|---:|---|
 | Magic | 4 | `0x42463136` |
-| Flags | 4 | 0: truncate; 1: round to nearest, ties to even |
+| Flags | 4 | Legacy 0/1; current 8/9, as detailed below |
 | Present count | 4 | Number of encoded non-null values |
 | Unit size | 4 | Maximum present values per independent unit |
 | Unit count | 4 | Ceiling of present count divided by unit size |
@@ -114,3 +117,35 @@ payloads and overflow on rounded coarse conversion. Shared bitmap and directory
 reads remain necessary and are separate from the residual addressing advantage.
 The coarse/fine raw-length directory fields remain 2*n and 4*n; these describe
 logical raw sizes, not decompressed work (the direct streams are not compressed).
+
+## Two-byte fine streams (current writer)
+
+Current writers use flags 8/9 for LZ4 layers and 12/13 for directly addressable
+linear layers; the low flag bit still selects truncate/nearest-even. Legacy
+flags 0/1 and 4/5 remain readable with their original four-byte XOR fine streams.
+Readers predating these new flags reject them as unsupported frame headers.
+
+The fine value is now the original unsigned low 16 bits, two bytes per present
+value. The default recovered high word is the coarse code, minus one modulo
+65536 when nearest-even is selected and the low word exceeds 0x8000. For low
+word exactly 0x8000 the default is no carry. Odd high-word rounding ties and
+canonicalized NaN payloads are restored by sparse correction records. Each
+record contains an ascending unit-local 32-bit index and the original 16-bit
+high word. This preserves arbitrary FP32 words, signed zero, finite overflow
+and all original NaN payloads. Coarse-only reads never touch fine corrections.
+
+For flags 8/9, the independently LZ4-compressed fine stream contains n big-endian
+16-bit low words, a big-endian 32-bit correction count, and six bytes per
+correction. Its raw-length field is 2*n+4+6*correction_count.
+
+For flags 12/13, fine bytes contain a big-endian 32-bit encoded-length prefix,
+a LinearResidualStream of unsigned low words, then the same correction count
+and records. The directory raw-length field is also 2*n+4+6*correction_count.
+Range reads access only the target packed residual span and the correction
+table, not preceding residual values. The linear bit-packed representation
+may use more or fewer than 16 bits per value depending on residual width;
+"two-byte fine" describes the raw low-word representation before encoding.
+
+For ordinary finite truncate data there are no correction records: each unit
+has exactly two raw fine bytes per value plus one four-byte zero count. Existing
+parent pages, bitmaps, coarse conversion and original-value subpages are unchanged.

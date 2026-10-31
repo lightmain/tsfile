@@ -29,9 +29,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
-/** Independently compressed BF16 and exact XOR-recovery streams inside a native value page. */
+/** Independently addressable BF16 and exact recovery streams inside a native value page. */
 public final class FloatLayerFrame {
   public static final int MAGIC = 0x42463136;
   public static final int HEADER_BYTES = 24;
@@ -73,6 +74,57 @@ public final class FloatLayerFrame {
     return (bits + 0x7fff + ((bits >>> 16) & 1)) >>> 16;
   }
 
+  private record Corrections(int[] indexes, int[] highs) {}
+
+  private static int predictedHigh(int high, int low, boolean roundEven) {
+    return (high - (roundEven && low > 0x8000 ? 1 : 0)) & 0xffff;
+  }
+
+  private static byte[] corrections(int[] bits, int begin, int count, boolean roundEven) {
+    ByteBuffer result = ByteBuffer.allocate(4 + count * 6);
+    result.putInt(0);
+    int exceptions = 0;
+    for (int i = 0; i < count; i++) {
+      int word = bits[begin + i];
+      int actualHigh = word >>> 16;
+      if (predictedHigh(coarse(word, roundEven), word & 0xffff, roundEven) != actualHigh) {
+        result.putInt(i).putShort((short) actualHigh);
+        exceptions++;
+      }
+    }
+    result.putInt(0, exceptions);
+    return Arrays.copyOf(result.array(), result.position());
+  }
+
+  private static Corrections parseCorrections(byte[] bytes, int count) throws IOException {
+    if (bytes.length < 4) {
+      throw invalid("fine-corrections-header");
+    }
+    ByteBuffer data = ByteBuffer.wrap(bytes);
+    int size = data.getInt();
+    if (size < 0 || size > count || 4 + 6L * size != bytes.length) {
+      throw invalid("fine-corrections-size");
+    }
+    int[] indexes = new int[size], highs = new int[size];
+    int previous = -1;
+    for (int i = 0; i < size; i++) {
+      indexes[i] = data.getInt();
+      highs[i] = data.getShort() & 0xffff;
+      if (indexes[i] <= previous || indexes[i] >= count) {
+        throw invalid("fine-corrections-index");
+      }
+      previous = indexes[i];
+    }
+    return new Corrections(indexes, highs);
+  }
+
+  private static int restoreCompact(
+      int high, int low, int index, boolean roundEven, Corrections corrections) {
+    int found = Arrays.binarySearch(corrections.indexes, index);
+    int originalHigh = found >= 0 ? corrections.highs[found] : predictedHigh(high, low, roundEven);
+    return (originalHigh << 16) | low;
+  }
+
   public static byte[] encode(int[] bits, int count, int unit, boolean roundEven)
       throws IOException {
     if (count < 0 || count > bits.length || count > MAX_VALUES || unit < 1) {
@@ -86,12 +138,14 @@ public final class FloatLayerFrame {
     for (int begin = 0; begin < count; ) {
       int n = Math.min(unit, count - begin);
       ByteBuffer high = ByteBuffer.allocate(n * 2);
-      ByteBuffer low = ByteBuffer.allocate(n * 4);
+      byte[] corrections = corrections(bits, begin, n, roundEven);
+      ByteBuffer low = ByteBuffer.allocate(n * 2 + corrections.length);
       for (int i = 0; i < n; i++) {
         int h = coarse(bits[begin + i], roundEven);
         high.putShort((short) h);
-        low.putInt(bits[begin + i] ^ (h << 16));
+        low.putShort((short) bits[begin + i]);
       }
+      low.put(corrections);
       byte[] highCompressed = compressor.compress(high.array());
       byte[] lowCompressed = compressor.compress(low.array());
       int lowOffset = Math.addExact(offset, highCompressed.length);
@@ -104,7 +158,7 @@ public final class FloatLayerFrame {
               n * 2,
               lowOffset,
               lowCompressed.length,
-              n * 4));
+              low.capacity()));
       payload.write(highCompressed);
       payload.write(lowCompressed);
       offset = Math.addExact(lowOffset, lowCompressed.length);
@@ -112,7 +166,7 @@ public final class FloatLayerFrame {
     }
     ByteBuffer out = ByteBuffer.allocate(offset);
     out.putInt(MAGIC)
-        .putInt(roundEven ? 1 : 0)
+        .putInt(roundEven ? 9 : 8)
         .putInt(count)
         .putInt(unit)
         .putInt(units)
@@ -230,13 +284,28 @@ public final class FloatLayerFrame {
       for (int i = 0; i < n; i++) {
         int h = coarse(bits[begin + i], roundEven);
         high[i] = (short) h;
-        low[i] = bits[begin + i] ^ (h << 16);
+        low[i] = bits[begin + i] & 0xffff;
       }
       byte[] coarse = LinearResidualStream.encode(high);
-      byte[] fine = LinearResidualStream.encode(low);
+      byte[] residuals = LinearResidualStream.encode(low);
+      byte[] corrections = corrections(bits, begin, n, roundEven);
+      byte[] fine =
+          ByteBuffer.allocate(4 + residuals.length + corrections.length)
+              .putInt(residuals.length)
+              .put(residuals)
+              .put(corrections)
+              .array();
       int fineOffset = Math.addExact(offset, coarse.length);
       entries.add(
-          new Entry(begin, n, offset, coarse.length, n * 2, fineOffset, fine.length, n * 4));
+          new Entry(
+              begin,
+              n,
+              offset,
+              coarse.length,
+              n * 2,
+              fineOffset,
+              fine.length,
+              n * 2 + corrections.length));
       payload.write(coarse);
       payload.write(fine);
       offset = Math.addExact(fineOffset, fine.length);
@@ -244,7 +313,7 @@ public final class FloatLayerFrame {
     }
     ByteBuffer out = ByteBuffer.allocate(offset);
     out.putInt(MAGIC)
-        .putInt(roundEven ? 5 : 4)
+        .putInt(roundEven ? 13 : 12)
         .putInt(count)
         .putInt(unit)
         .putInt(units)
@@ -272,7 +341,7 @@ public final class FloatLayerFrame {
     int unit = header.getInt(), units = header.getInt(), length = header.getInt();
     if (magic != MAGIC
         || flags < 0
-        || flags > 5
+        || !((flags <= 5) || flags == 8 || flags == 9 || flags == 12 || flags == 13)
         || count < 0
         || count > MAX_VALUES
         || unit < 1
@@ -312,6 +381,20 @@ public final class FloatLayerFrame {
                 && e.coarseLength <= n * 4L + LinearResidualStream.HEADER_BYTES
                 && e.fineLength <= n * 4L + LinearResidualStream.HEADER_BYTES;
       }
+      if ((flags & 14) == 8 || (flags & 14) == 12) {
+        rawSizesValid =
+            e.coarseRaw == n * 2
+                && e.fineLength > 0
+                && e.fineRaw >= n * 2L + 4
+                && e.fineRaw <= n * 8L + 4;
+        if ((flags & 14) == 12) {
+          rawSizesValid &=
+              e.coarseLength >= LinearResidualStream.HEADER_BYTES
+                  && e.coarseLength <= n * 4L + LinearResidualStream.HEADER_BYTES
+                  && e.fineLength >= 17
+                  && e.fineLength <= n * 10L + 17;
+        }
+      }
       if (e.begin != begin
           || e.count != n
           || e.coarseOffset != next
@@ -328,7 +411,7 @@ public final class FloatLayerFrame {
     if (next != length) {
       throw invalid("payload-size");
     }
-    return new Directory(count, unit, (flags & 1) != 0, flags & 6, length, List.copyOf(entries));
+    return new Directory(count, unit, (flags & 1) != 0, flags & 14, length, List.copyOf(entries));
   }
 
   private static ByteBuffer unpack(ReadAt source, int offset, int length, int raw)
@@ -359,22 +442,48 @@ public final class FloatLayerFrame {
       if (begin >= end) {
         continue;
       }
-      if (directory.format == 4) {
+      if (directory.format == 4 || directory.format == 12) {
         int offsetInUnit = begin - e.begin, size = end - begin;
         int[] high =
             LinearResidualStream.readRange(
                 source, e.coarseOffset, e.coarseLength, e.count, offsetInUnit, size);
-        int[] fine =
-            coarseOnly
-                ? null
-                : LinearResidualStream.readRange(
-                    source, e.fineOffset, e.fineLength, e.count, offsetInUnit, size);
+        int[] fine = null;
+        Corrections corrections = null;
+        if (!coarseOnly) {
+          int offset = e.fineOffset, bytes = e.fineLength;
+          if (directory.format == 12) {
+            int encoded = ByteBuffer.wrap(exact(source, offset, 4)).getInt();
+            int correctionBytes = bytes - 4 - encoded;
+            if (encoded < LinearResidualStream.HEADER_BYTES
+                || encoded > e.count * 4L + LinearResidualStream.HEADER_BYTES
+                || correctionBytes < 4
+                || correctionBytes > e.count * 6L + 4
+                || e.fineRaw != e.count * 2L + correctionBytes) {
+              throw invalid("linear-fine-size");
+            }
+            corrections =
+                parseCorrections(exact(source, offset + 4L + encoded, correctionBytes), e.count);
+            offset += 4;
+            bytes = encoded;
+          }
+          fine = LinearResidualStream.readRange(source, offset, bytes, e.count, offsetInUnit, size);
+        }
         for (int i = 0; i < size; i++) {
           if (high[i] < Short.MIN_VALUE || high[i] > Short.MAX_VALUE) {
             throw invalid("linear-coarse-code");
           }
           int code = high[i] & 0xffff;
-          result[begin - start + i] = coarseOnly ? code : (code << 16) ^ fine[i];
+          if (coarseOnly) {
+            result[begin - start + i] = code;
+          } else if (directory.format == 12) {
+            if (fine[i] < 0 || fine[i] > 0xffff) {
+              throw invalid("linear-fine-code");
+            }
+            result[begin - start + i] =
+                restoreCompact(code, fine[i], offsetInUnit + i, directory.roundEven, corrections);
+          } else {
+            result[begin - start + i] = (code << 16) ^ fine[i];
+          }
         }
         continue;
       }
@@ -393,9 +502,28 @@ public final class FloatLayerFrame {
       }
       ByteBuffer high = unpack(source, e.coarseOffset, e.coarseLength, e.coarseRaw);
       ByteBuffer low = coarseOnly ? null : unpack(source, e.fineOffset, e.fineLength, e.fineRaw);
+      Corrections corrections = null;
+      if (!coarseOnly && directory.format == 8) {
+        byte[] bytes = new byte[e.fineRaw - e.count * 2];
+        low.position(e.count * 2);
+        low.get(bytes);
+        corrections = parseCorrections(bytes, e.count);
+      }
       for (int at = begin; at < end; at++) {
         int h = high.getShort((at - e.begin) * 2) & 0xffff;
-        result[at - start] = coarseOnly ? h : (h << 16) ^ low.getInt((at - e.begin) * 4);
+        if (coarseOnly) {
+          result[at - start] = h;
+        } else if (directory.format == 8) {
+          result[at - start] =
+              restoreCompact(
+                  h,
+                  low.getShort((at - e.begin) * 2) & 0xffff,
+                  at - e.begin,
+                  directory.roundEven,
+                  corrections);
+        } else {
+          result[at - start] = (h << 16) ^ low.getInt((at - e.begin) * 4);
+        }
       }
     }
     return result;

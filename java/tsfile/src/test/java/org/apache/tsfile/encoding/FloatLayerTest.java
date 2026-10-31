@@ -23,6 +23,7 @@ import org.apache.tsfile.encoding.decoder.Decoder;
 import org.apache.tsfile.encoding.encoder.Encoder;
 import org.apache.tsfile.encoding.encoder.FloatLayerEncoder;
 import org.apache.tsfile.encoding.floatlayer.FloatLayerFrame;
+import org.apache.tsfile.encoding.floatlayer.LinearResidualStream;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.metadata.enums.CompressionType;
 import org.apache.tsfile.file.metadata.enums.TSEncoding;
@@ -49,6 +50,134 @@ import static org.junit.Assert.fail;
 public class FloatLayerTest {
   private FloatLayerFrame.ReadAt memory(byte[] frame) {
     return (offset, size) -> Arrays.copyOfRange(frame, (int) offset, (int) offset + size);
+  }
+
+  @Test
+  public void testCompactFineEveryHighWordAndRoundingBoundary() throws Exception {
+    int[] lows = {0, 1, 0x7fff, 0x8000, 0x8001, 0xffff};
+    int[] bits = new int[65536 * lows.length];
+    for (int high = 0; high < 65536; high++) {
+      for (int i = 0; i < lows.length; i++) {
+        bits[high * lows.length + i] = (high << 16) | lows[i];
+      }
+    }
+    for (boolean round : new boolean[] {false, true}) {
+      for (boolean linear : new boolean[] {false, true}) {
+        byte[] frame =
+            linear
+                ? FloatLayerFrame.encodeLinear(bits, bits.length, 1024, round)
+                : FloatLayerFrame.encode(bits, bits.length, 1024, round);
+        assertArrayEquals(bits, FloatLayerFrame.decode(frame));
+        var directory = FloatLayerFrame.directory(memory(frame), frame.length);
+        assertEquals(linear ? 12 : 8, directory.format());
+        for (int start : new int[] {0, 1019, 196607, bits.length - 7}) {
+          int length = Math.min(29, bits.length - start);
+          assertArrayEquals(
+              Arrays.copyOfRange(bits, start, start + length),
+              FloatLayerFrame.readRange(memory(frame), directory, start, length, false));
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testCompactFineUsesTwoBytesAndCoarseSkipsCorrections() throws Exception {
+    int[] bits = new int[257];
+    for (int i = 0; i < bits.length; i++) {
+      bits[i] = 0x3f800001 + i * 179;
+    }
+    for (boolean linear : new boolean[] {false, true}) {
+      byte[] frame =
+          linear
+              ? FloatLayerFrame.encodeLinear(bits, bits.length, 256, false)
+              : FloatLayerFrame.encode(bits, bits.length, 256, false);
+      var directory = FloatLayerFrame.directory(memory(frame), frame.length);
+      for (var entry : directory.entries()) {
+        assertEquals(entry.count() * 2 + 4, entry.fineRaw());
+      }
+      FloatLayerFrame.ReadAt observed =
+          (offset, size) -> {
+            for (var entry : directory.entries()) {
+              if (offset < entry.fineOffset() + entry.fineLength()
+                  && offset + size > entry.fineOffset()) {
+                fail("Coarse range touched compact fine data");
+              }
+            }
+            return memory(frame).read(offset, size);
+          };
+      int[] actual = FloatLayerFrame.readRange(observed, directory, 250, 7, true);
+      for (int i = 0; i < actual.length; i++) {
+        assertEquals(FloatLayerFrame.coarse(bits[250 + i], false), actual[i]);
+      }
+    }
+  }
+
+  private byte[] legacyFrame(int[] bits, boolean linear, boolean round) throws Exception {
+    int n = bits.length;
+    ByteBuffer highRaw = ByteBuffer.allocate(n * 2), lowRaw = ByteBuffer.allocate(n * 4);
+    int[] highWords = new int[n], lowWords = new int[n];
+    for (int i = 0; i < n; i++) {
+      int high = FloatLayerFrame.coarse(bits[i], round);
+      highRaw.putShort((short) high);
+      lowRaw.putInt(bits[i] ^ (high << 16));
+      highWords[i] = (short) high;
+      lowWords[i] = bits[i] ^ (high << 16);
+    }
+    var compressor = ICompressor.getCompressor(CompressionType.LZ4);
+    byte[] high =
+        linear ? LinearResidualStream.encode(highWords) : compressor.compress(highRaw.array());
+    byte[] low =
+        linear ? LinearResidualStream.encode(lowWords) : compressor.compress(lowRaw.array());
+    int length = 56 + high.length + low.length;
+    return ByteBuffer.allocate(length)
+        .putInt(FloatLayerFrame.MAGIC)
+        .putInt((linear ? 4 : 0) + (round ? 1 : 0))
+        .putInt(n)
+        .putInt(n)
+        .putInt(1)
+        .putInt(length)
+        .putInt(0)
+        .putInt(n)
+        .putInt(56)
+        .putInt(high.length)
+        .putInt(n * 2)
+        .putInt(56 + high.length)
+        .putInt(low.length)
+        .putInt(n * 4)
+        .put(high)
+        .put(low)
+        .array();
+  }
+
+  @Test
+  public void testLegacyFourByteFilesRemainReadable() throws Exception {
+    int[] bits = {0, 0x80000000, 0x3f818000, 0x7f7fffff, 0x7f800001, 0xffa12345};
+    for (boolean linear : new boolean[] {false, true}) {
+      for (boolean round : new boolean[] {false, true}) {
+        byte[] frame = legacyFrame(bits, linear, round);
+        assertArrayEquals(bits, FloatLayerFrame.decode(frame));
+      }
+    }
+  }
+
+  @Test
+  public void testMalformedCompactCorrectionsAreRejected() throws Exception {
+    int[] bits = {0x3f818000, 0x7f800001, 0xffa12345};
+    byte[] frame = FloatLayerFrame.encodeLinear(bits, bits.length, bits.length, true);
+    var directory = FloatLayerFrame.directory(memory(frame), frame.length);
+    var entry = directory.entries().get(0);
+    int encoded = ByteBuffer.wrap(frame).getInt(entry.fineOffset());
+    int correctionOffset = entry.fineOffset() + 4 + encoded;
+    for (int offset : new int[] {entry.fineOffset(), correctionOffset, correctionOffset + 4}) {
+      byte[] broken = frame.clone();
+      ByteBuffer.wrap(broken).putInt(offset, -1);
+      try {
+        FloatLayerFrame.decode(broken);
+        fail("Accepted malformed compact correction");
+      } catch (IOException expected) {
+        assertNotNull(expected.getMessage());
+      }
+    }
   }
 
   @Test
