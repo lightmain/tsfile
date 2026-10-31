@@ -83,6 +83,8 @@ public abstract class TSEncodingBuilder {
         return new RLBE();
       case CAMEL:
         return new Camel();
+      case BF16_LAYERED:
+        return new FloatLayer();
       default:
         throw new UnsupportedOperationException(
             Messages.format("error.encoding.ts_encoding_builder_unsupported", type));
@@ -106,6 +108,44 @@ public abstract class TSEncodingBuilder {
    * @param props - properties of encoding
    */
   public abstract void initFromProps(Map<String, String> props);
+
+  /** BF16 coarse layer with independently compressed exact recovery data. */
+  public static class FloatLayer extends TSEncodingBuilder {
+    private int unit = Integer.MAX_VALUE;
+    private boolean roundEven;
+
+    @Override
+    public Encoder getEncoder(TSDataType type) {
+      if (type != TSDataType.FLOAT) {
+        throw new UnsupportedOperationException(Messages.format(ERROR_MSG_KEY, type));
+      }
+      return new FloatLayerEncoder(unit, roundEven);
+    }
+
+    @Override
+    public void initFromProps(Map<String, String> props) {
+      if (props == null) {
+        return;
+      }
+      if (props.containsKey("float_layer_unit")) {
+        try {
+          unit = Integer.parseInt(props.get("float_layer_unit"));
+        } catch (NumberFormatException e) {
+          throw new IllegalArgumentException(
+              Messages.format("error.encoding.bf16_invalid", "unit"));
+        }
+        if (unit < 1) {
+          throw new IllegalArgumentException(
+              Messages.format("error.encoding.bf16_invalid", "unit"));
+        }
+      }
+      String rule = props.getOrDefault("bf16_rule", "truncate");
+      if (!rule.equals("truncate") && !rule.equals("round_nearest_even")) {
+        throw new IllegalArgumentException(Messages.format("error.encoding.bf16_invalid", "rule"));
+      }
+      roundEven = rule.equals("round_nearest_even");
+    }
+  }
 
   @Override
   public String toString() {

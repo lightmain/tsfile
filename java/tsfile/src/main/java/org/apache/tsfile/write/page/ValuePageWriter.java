@@ -73,6 +73,7 @@ public class ValuePageWriter {
   private static final byte[] NULL_BITMAP_BATCH = new byte[1024];
 
   public ValuePageWriter(Encoder valueEncoder, ICompressor compressor, TSDataType dataType) {
+    checkFloatLayerCompression(valueEncoder, compressor);
     this.valueOut = new PublicBAOS();
     this.bitmap = 0;
     this.size = 0;
@@ -88,6 +89,7 @@ public class ValuePageWriter {
       ICompressor compressor,
       TSDataType dataType,
       EncryptParameter encryptParam) {
+    checkFloatLayerCompression(valueEncoder, compressor);
     this.valueOut = new PublicBAOS();
     this.bitmap = 0;
     this.size = 0;
@@ -494,7 +496,16 @@ public class ValuePageWriter {
   }
 
   public void setValueEncoder(Encoder encoder) {
+    checkFloatLayerCompression(encoder, compressor);
     this.valueEncoder = encoder;
+  }
+
+  private static void checkFloatLayerCompression(Encoder encoder, ICompressor compressor) {
+    if (encoder.getType() == org.apache.tsfile.file.metadata.enums.TSEncoding.BF16_LAYERED
+        && compressor.getType() != CompressionType.UNCOMPRESSED) {
+      throw new IllegalArgumentException(
+          org.apache.tsfile.i18n.Messages.get("error.encoding.bf16_outer_compression"));
+    }
   }
 
   public void initStatistics(TSDataType dataType) {

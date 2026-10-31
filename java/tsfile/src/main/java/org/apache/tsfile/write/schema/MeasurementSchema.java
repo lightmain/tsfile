@@ -276,6 +276,9 @@ public class MeasurementSchema
    * @return Encoder for value
    */
   public Encoder getValueEncoder() {
+    if (encoding == TSEncoding.BF16_LAYERED && compressionType != CompressionType.UNCOMPRESSED) {
+      throw new IllegalArgumentException(Messages.get("error.encoding.bf16_outer_compression"));
+    }
     // it is ok even if encodingConverter is constructed two instances for concurrent scenario
     if (encodingConverter == null) {
       // initialize TSEncoding. e.g. set max error for PLA and SDT

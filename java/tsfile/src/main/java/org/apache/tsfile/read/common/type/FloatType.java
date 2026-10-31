@@ -25,6 +25,7 @@ import org.apache.tsfile.block.column.ColumnBuilderStatus;
 import org.apache.tsfile.common.conf.TSFileConfig;
 import org.apache.tsfile.encoding.decoder.Decoder;
 import org.apache.tsfile.encoding.decoder.FloatDecoder;
+import org.apache.tsfile.encoding.decoder.FloatLayerDecoder;
 import org.apache.tsfile.encoding.decoder.FloatRLBEDecoder;
 import org.apache.tsfile.encoding.decoder.FloatSprintzDecoder;
 import org.apache.tsfile.encoding.decoder.SinglePrecisionChimpDecoder;
@@ -154,6 +155,7 @@ public class FloatType extends AbstractType {
       case CHIMP -> new SinglePrecisionChimpDecoder();
       case SPRINTZ -> new FloatSprintzDecoder();
       case RLBE -> new FloatRLBEDecoder();
+      case BF16_LAYERED -> new FloatLayerDecoder();
       default -> throw decoderNotFound(encoding);
     };
   }
