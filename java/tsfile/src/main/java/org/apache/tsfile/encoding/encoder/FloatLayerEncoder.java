@@ -33,7 +33,11 @@ public class FloatLayerEncoder extends Encoder {
   private final boolean roundEven;
 
   public FloatLayerEncoder(int unit, boolean roundEven) {
-    super(TSEncoding.BF16_LAYERED);
+    this(TSEncoding.BF16_LAYERED, unit, roundEven);
+  }
+
+  public FloatLayerEncoder(TSEncoding type, int unit, boolean roundEven) {
+    super(type);
     if (unit < 1) {
       throw new IllegalArgumentException(
           org.apache.tsfile.i18n.Messages.format("error.encoding.bf16_invalid", "unit"));
@@ -52,7 +56,10 @@ public class FloatLayerEncoder extends Encoder {
 
   @Override
   public void flush(ByteArrayOutputStream out) throws IOException {
-    out.write(FloatLayerFrame.encode(bits, count, unit, roundEven));
+    out.write(
+        getType() == TSEncoding.FLOAT_SUBPAGE
+            ? FloatLayerFrame.encodeOriginal(bits, count, unit)
+            : FloatLayerFrame.encode(bits, count, unit, roundEven));
     count = 0;
   }
 

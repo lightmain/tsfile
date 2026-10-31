@@ -501,7 +501,8 @@ public class ValuePageWriter {
   }
 
   private static void checkFloatLayerCompression(Encoder encoder, ICompressor compressor) {
-    if (encoder.getType() == org.apache.tsfile.file.metadata.enums.TSEncoding.BF16_LAYERED
+    if ((encoder.getType() == org.apache.tsfile.file.metadata.enums.TSEncoding.BF16_LAYERED
+            || encoder.getType() == org.apache.tsfile.file.metadata.enums.TSEncoding.FLOAT_SUBPAGE)
         && compressor.getType() != CompressionType.UNCOMPRESSED) {
       throw new IllegalArgumentException(
           org.apache.tsfile.i18n.Messages.get("error.encoding.bf16_outer_compression"));

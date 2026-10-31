@@ -20,6 +20,8 @@ package org.apache.tsfile.encoding.floatlayer;
 
 import org.apache.tsfile.compress.ICompressor;
 import org.apache.tsfile.compress.IUnCompressor;
+import org.apache.tsfile.encoding.decoder.SinglePrecisionDecoderV2;
+import org.apache.tsfile.encoding.encoder.SinglePrecisionEncoderV2;
 import org.apache.tsfile.file.metadata.enums.CompressionType;
 import org.apache.tsfile.i18n.Messages;
 
@@ -54,7 +56,7 @@ public final class FloatLayerFrame {
       int fineRaw) {}
 
   public record Directory(
-      int count, int unit, boolean roundEven, int frameLength, List<Entry> entries) {}
+      int count, int unit, boolean roundEven, int format, int frameLength, List<Entry> entries) {}
 
   public static IOException invalid(Object detail) {
     return new IOException(Messages.format("error.encoding.bf16_invalid", detail));
@@ -137,6 +139,71 @@ public final class FloatLayerFrame {
     return result;
   }
 
+  /** Independently restarted original GORILLA plus LZ4 units; exact raw fallback for sentinel. */
+  public static byte[] encodeOriginal(int[] bits, int count, int unit) throws IOException {
+    if (count < 0 || count > bits.length || count > MAX_VALUES || unit < 1) {
+      throw invalid("count/unit");
+    }
+    int units = (int) ((count + (long) unit - 1) / unit);
+    int offset = HEADER_BYTES + units * ENTRY_BYTES;
+    List<Entry> entries = new ArrayList<>();
+    ByteArrayOutputStream payload = new ByteArrayOutputStream();
+    int sentinel =
+        Float.floatToRawIntBits(
+            org.apache.tsfile.common.conf.TSFileConfig.GORILLA_ENCODING_ENDING_FLOAT);
+    for (int begin = 0; begin < count; ) {
+      int n = Math.min(unit, count - begin);
+      boolean fallback = false;
+      for (int i = 0; i < n; i++) {
+        fallback |= bits[begin + i] == sentinel;
+      }
+      byte[] encoded;
+      if (fallback) {
+        ByteBuffer raw = ByteBuffer.allocate(n * 4);
+        for (int i = 0; i < n; i++) {
+          raw.putInt(bits[begin + i]);
+        }
+        encoded = raw.array();
+      } else {
+        SinglePrecisionEncoderV2 encoder = new SinglePrecisionEncoderV2();
+        ByteArrayOutputStream raw = new ByteArrayOutputStream();
+        for (int i = 0; i < n; i++) {
+          encoder.encode(bits[begin + i], raw);
+        }
+        encoder.flush(raw);
+        encoded = raw.toByteArray();
+      }
+      byte[] compressed = ICompressor.getCompressor(CompressionType.LZ4).compress(encoded);
+      entries.add(
+          new Entry(
+              begin,
+              n,
+              offset,
+              compressed.length,
+              fallback ? -encoded.length : encoded.length,
+              offset + compressed.length,
+              0,
+              0));
+      payload.write(compressed);
+      offset = Math.addExact(offset, compressed.length);
+      begin += n;
+    }
+    ByteBuffer out = ByteBuffer.allocate(offset);
+    out.putInt(MAGIC).putInt(2).putInt(count).putInt(unit).putInt(units).putInt(offset);
+    for (Entry e : entries) {
+      out.putInt(e.begin)
+          .putInt(e.count)
+          .putInt(e.coarseOffset)
+          .putInt(e.coarseLength)
+          .putInt(e.coarseRaw)
+          .putInt(e.fineOffset)
+          .putInt(e.fineLength)
+          .putInt(e.fineRaw);
+    }
+    out.put(payload.toByteArray());
+    return out.array();
+  }
+
   public static Directory directory(ReadAt source, int available) throws IOException {
     if (available < HEADER_BYTES) {
       throw invalid("header-size");
@@ -145,7 +212,7 @@ public final class FloatLayerFrame {
     int magic = header.getInt(), flags = header.getInt(), count = header.getInt();
     int unit = header.getInt(), units = header.getInt(), length = header.getInt();
     if (magic != MAGIC
-        || (flags != 0 && flags != 1)
+        || (flags != 0 && flags != 1 && flags != 2)
         || count < 0
         || count > MAX_VALUES
         || unit < 1
@@ -170,14 +237,18 @@ public final class FloatLayerFrame {
               table.getInt(),
               table.getInt());
       int n = Math.min(unit, count - begin);
+      boolean rawSizesValid =
+          flags == 2
+              ? ((e.coarseRaw > 0 && e.coarseRaw <= n * 8L + 64) || e.coarseRaw == -n * 4)
+                  && e.fineLength == 0
+                  && e.fineRaw == 0
+              : e.coarseRaw == n * 2 && e.fineLength > 0 && e.fineRaw == n * 4;
       if (e.begin != begin
           || e.count != n
           || e.coarseOffset != next
           || e.coarseLength < 1
-          || e.coarseRaw != n * 2
+          || !rawSizesValid
           || e.fineOffset != next + e.coarseLength
-          || e.fineLength < 1
-          || e.fineRaw != n * 4
           || e.fineOffset + (long) e.fineLength > length) {
         throw invalid("directory");
       }
@@ -188,7 +259,7 @@ public final class FloatLayerFrame {
     if (next != length) {
       throw invalid("payload-size");
     }
-    return new Directory(count, unit, flags == 1, length, List.copyOf(entries));
+    return new Directory(count, unit, flags == 1, flags == 2 ? 2 : 0, length, List.copyOf(entries));
   }
 
   private static ByteBuffer unpack(ReadAt source, int offset, int length, int raw)
@@ -217,6 +288,19 @@ public final class FloatLayerFrame {
     for (Entry e : directory.entries) {
       int begin = Math.max(start, e.begin), end = Math.min(start + length, e.begin + e.count);
       if (begin >= end) {
+        continue;
+      }
+      if (directory.format == 2) {
+        ByteBuffer data = unpack(source, e.coarseOffset, e.coarseLength, Math.abs(e.coarseRaw));
+        SinglePrecisionDecoderV2 decoder = new SinglePrecisionDecoderV2();
+        for (int i = 0; i < e.count; i++) {
+          int bits =
+              e.coarseRaw < 0 ? data.getInt() : Float.floatToRawIntBits(decoder.readFloat(data));
+          int at = e.begin + i;
+          if (at >= begin && at < end) {
+            result[at - start] = coarseOnly ? coarse(bits, directory.roundEven) : bits;
+          }
+        }
         continue;
       }
       ByteBuffer high = unpack(source, e.coarseOffset, e.coarseLength, e.coarseRaw);

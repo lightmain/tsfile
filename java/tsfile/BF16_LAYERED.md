@@ -71,3 +71,21 @@ The 32-bit XOR fine stream deliberately favors simple exact recovery. With LZ4
 it can increase total file size; complete-file measurements must include both
 streams, validity, time, directories and native metadata. Coarse-only read bytes
 must not be reported as total file size or complete-file compression ratio.
+
+## Independently encoded original-value subpages
+
+Encoding ID 16 (`FLOAT_SUBPAGE`) uses the same native aligned-page and directory
+layout, with frame flags 2. Each unit restarts the original GORILLA value encoder
+and applies LZ4 independently. The coarse-named stream slot contains the whole
+original FP32 encoding; the fine slot is empty (both fine lengths are zero).
+The coarse raw length is the positive GORILLA stream length. If an original word
+equals GORILLA's reserved end marker, that unit falls back to raw FP32 words and
+the raw-length field is negative. The absolute value is its decompressed size.
+This fallback preserves arbitrary FP32 payloads without changing their bits.
+
+The default unit size is 1024 present values. Parent-page validity and time
+remain shared metadata: bitmap prefix counts map present-value starts to the
+corresponding logical rows, which in turn address the unchanged time column.
+The direct helper returns numeric ranges, not independently decompressed
+timestamp ranges. Ordinary complete queries retain the native time-page path.
+Smaller native pages with matching time/value boundaries are a separate control.

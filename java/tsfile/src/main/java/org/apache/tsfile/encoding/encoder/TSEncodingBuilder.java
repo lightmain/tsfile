@@ -85,6 +85,8 @@ public abstract class TSEncodingBuilder {
         return new Camel();
       case BF16_LAYERED:
         return new FloatLayer();
+      case FLOAT_SUBPAGE:
+        return new FloatLayer(TSEncoding.FLOAT_SUBPAGE);
       default:
         throw new UnsupportedOperationException(
             Messages.format("error.encoding.ts_encoding_builder_unsupported", type));
@@ -111,15 +113,27 @@ public abstract class TSEncodingBuilder {
 
   /** BF16 coarse layer with independently compressed exact recovery data. */
   public static class FloatLayer extends TSEncodingBuilder {
+    private final TSEncoding encoding;
     private int unit = Integer.MAX_VALUE;
     private boolean roundEven;
+
+    public FloatLayer() {
+      this(TSEncoding.BF16_LAYERED);
+    }
+
+    public FloatLayer(TSEncoding encoding) {
+      this.encoding = encoding;
+      if (encoding == TSEncoding.FLOAT_SUBPAGE) {
+        unit = 1024;
+      }
+    }
 
     @Override
     public Encoder getEncoder(TSDataType type) {
       if (type != TSDataType.FLOAT) {
         throw new UnsupportedOperationException(Messages.format(ERROR_MSG_KEY, type));
       }
-      return new FloatLayerEncoder(unit, roundEven);
+      return new FloatLayerEncoder(encoding, unit, roundEven);
     }
 
     @Override

@@ -94,6 +94,33 @@ public class FloatLayerTest {
   }
 
   @Test
+  public void testOriginalSubpageRecoveryAndSelectiveUnitReads() throws Exception {
+    int[] bits = new Random(131).ints(1027).toArray();
+    bits[9] =
+        Float.floatToRawIntBits(
+            org.apache.tsfile.common.conf.TSFileConfig.GORILLA_ENCODING_ENDING_FLOAT);
+    byte[] frame = FloatLayerFrame.encodeOriginal(bits, bits.length, 256);
+    assertArrayEquals(bits, FloatLayerFrame.decode(frame));
+    var directory = FloatLayerFrame.directory(memory(frame), frame.length);
+    assertEquals(2, directory.format());
+    var selected = directory.entries().get(1);
+    FloatLayerFrame.ReadAt observed =
+        (offset, length) -> {
+          if (offset
+              >= FloatLayerFrame.HEADER_BYTES
+                  + directory.entries().size() * FloatLayerFrame.ENTRY_BYTES) {
+            assertEquals(selected.coarseOffset(), offset);
+          }
+          return memory(frame).read(offset, length);
+        };
+    assertArrayEquals(
+        Arrays.copyOfRange(bits, 300, 330),
+        FloatLayerFrame.readRange(observed, directory, 300, 30, false));
+    assertTrue(TSEncoding.isSupported(TSDataType.FLOAT, TSEncoding.FLOAT_SUBPAGE));
+    assertFalse(TSEncoding.isSupported(TSDataType.DOUBLE, TSEncoding.FLOAT_SUBPAGE));
+  }
+
+  @Test
   public void testOrdinaryEncoderDecoderReuseAndTypeSupport() throws Exception {
     assertTrue(TSEncoding.isSupported(TSDataType.FLOAT, TSEncoding.BF16_LAYERED));
     assertFalse(TSEncoding.isSupported(TSDataType.DOUBLE, TSEncoding.BF16_LAYERED));

@@ -31,7 +31,11 @@ public class FloatLayerDecoder extends Decoder {
   private int cursor;
 
   public FloatLayerDecoder() {
-    super(TSEncoding.BF16_LAYERED);
+    this(TSEncoding.BF16_LAYERED);
+  }
+
+  public FloatLayerDecoder(TSEncoding type) {
+    super(type);
   }
 
   private void load(ByteBuffer buffer) {
