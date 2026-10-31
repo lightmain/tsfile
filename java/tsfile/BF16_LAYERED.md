@@ -75,7 +75,8 @@ must not be reported as total file size or complete-file compression ratio.
 ## Independently encoded original-value subpages
 
 Encoding ID 16 (`FLOAT_SUBPAGE`) uses the same native aligned-page and directory
-layout, with frame flags 2. Each unit restarts the original GORILLA value encoder
+layout, with frame flags 2 (truncate) or 3 (round to nearest, ties to even).
+Each unit restarts the original GORILLA value encoder
 and applies LZ4 independently. The coarse-named stream slot contains the whole
 original FP32 encoding; the fine slot is empty (both fine lengths are zero).
 The coarse raw length is the positive GORILLA stream length. If an original word
@@ -89,3 +90,27 @@ corresponding logical rows, which in turn address the unchanged time column.
 The direct helper returns numeric ranges, not independently decompressed
 timestamp ranges. Ordinary complete queries retain the native time-page path.
 Smaller native pages with matching time/value boundaries are a separate control.
+
+## Directly addressable linear residuals
+
+Encoding ID 17 (`LINEAR_RESIDUAL`) uses flags 4 (truncate) or 5 (round to nearest,
+ties to even). Its default unit size is 1024 present values. There is no outer
+page compression and no general-purpose compression of these unit streams.
+Coarse words are sign-extended 16-bit BF16 codes; fine words are the original
+FP32 bits XOR the coarse code shifted by 16. Each stream has an independent
+nine-byte big-endian header: signed 32-bit base, signed 32-bit step and one-byte
+residual width (0 through 32). For count n, base is the first word; step is
+the signed 64-bit difference between last and first divided by n-1, truncating
+toward zero (zero for n=1). Predictions base+step*i and residual subtraction
+wrap modulo 2^32. Signed residual r is mapped to unsigned (r<<1) XOR (r>>31).
+The maximum required width is shared by the unit. Codes are packed least
+significant bit first, with zero padding in the last byte.
+
+A range reads the header and only bytes covering its residual bits; computing
+each prediction requires its unit-local index, not preceding values. Width zero
+requires only the shared header. Ordinary full decoding and exact recovery use
+the same stream. Arbitrary original FP32 words remain lossless, including NaN
+payloads and overflow on rounded coarse conversion. Shared bitmap and directory
+reads remain necessary and are separate from the residual addressing advantage.
+The coarse/fine raw-length directory fields remain 2*n and 4*n; these describe
+logical raw sizes, not decompressed work (the direct streams are not compressed).

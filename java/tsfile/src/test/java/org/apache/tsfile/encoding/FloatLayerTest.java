@@ -121,6 +121,39 @@ public class FloatLayerTest {
   }
 
   @Test
+  public void testLinearLayerRecoveryForArbitraryWordsAndRules() throws Exception {
+    int[] bits = new Random(731).ints(8195).toArray();
+    bits[0] = 0x7f800001;
+    bits[1] = 0x80000000;
+    bits[2] = 0x7f7fffff;
+    for (boolean rounded : new boolean[] {false, true}) {
+      byte[] frame = FloatLayerFrame.encodeLinear(bits, bits.length, 1024, rounded);
+      assertArrayEquals(bits, FloatLayerFrame.decode(frame));
+      var directory = FloatLayerFrame.directory(memory(frame), frame.length);
+      int[] coarse = FloatLayerFrame.readRange(memory(frame), directory, 999, 2099, true);
+      for (int i = 0; i < coarse.length; i++) {
+        assertEquals(FloatLayerFrame.coarse(bits[999 + i], rounded), coarse[i]);
+      }
+      var schema =
+          new MeasurementSchema(
+              "value",
+              TSDataType.FLOAT,
+              TSEncoding.LINEAR_RESIDUAL,
+              CompressionType.UNCOMPRESSED,
+              Map.of("bf16_rule", rounded ? "round_nearest_even" : "truncate"));
+      Encoder encoder = schema.getValueEncoder();
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
+      for (int word : bits) {
+        encoder.encode(Float.intBitsToFloat(word), output);
+      }
+      encoder.flush(output);
+      assertArrayEquals(bits, FloatLayerFrame.decode(output.toByteArray()));
+    }
+    assertFalse(TSEncoding.isSupported(TSDataType.DOUBLE, TSEncoding.LINEAR_RESIDUAL));
+    assertEquals(TSEncoding.LINEAR_RESIDUAL, TSEncoding.deserialize((byte) 17));
+  }
+
+  @Test
   public void testOrdinaryEncoderDecoderReuseAndTypeSupport() throws Exception {
     assertTrue(TSEncoding.isSupported(TSDataType.FLOAT, TSEncoding.BF16_LAYERED));
     assertFalse(TSEncoding.isSupported(TSDataType.DOUBLE, TSEncoding.BF16_LAYERED));

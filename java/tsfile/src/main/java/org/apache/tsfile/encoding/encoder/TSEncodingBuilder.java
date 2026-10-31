@@ -87,6 +87,8 @@ public abstract class TSEncodingBuilder {
         return new FloatLayer();
       case FLOAT_SUBPAGE:
         return new FloatLayer(TSEncoding.FLOAT_SUBPAGE);
+      case LINEAR_RESIDUAL:
+        return new FloatLayer(TSEncoding.LINEAR_RESIDUAL);
       default:
         throw new UnsupportedOperationException(
             Messages.format("error.encoding.ts_encoding_builder_unsupported", type));
@@ -123,7 +125,7 @@ public abstract class TSEncodingBuilder {
 
     public FloatLayer(TSEncoding encoding) {
       this.encoding = encoding;
-      if (encoding == TSEncoding.FLOAT_SUBPAGE) {
+      if (encoding == TSEncoding.FLOAT_SUBPAGE || encoding == TSEncoding.LINEAR_RESIDUAL) {
         unit = 1024;
       }
     }

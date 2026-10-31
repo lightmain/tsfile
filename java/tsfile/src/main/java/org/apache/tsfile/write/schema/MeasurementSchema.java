@@ -276,7 +276,9 @@ public class MeasurementSchema
    * @return Encoder for value
    */
   public Encoder getValueEncoder() {
-    if ((encoding == TSEncoding.BF16_LAYERED || encoding == TSEncoding.FLOAT_SUBPAGE)
+    if ((encoding == TSEncoding.BF16_LAYERED
+            || encoding == TSEncoding.FLOAT_SUBPAGE
+            || encoding == TSEncoding.LINEAR_RESIDUAL)
         && compressionType != CompressionType.UNCOMPRESSED) {
       throw new IllegalArgumentException(Messages.get("error.encoding.bf16_outer_compression"));
     }

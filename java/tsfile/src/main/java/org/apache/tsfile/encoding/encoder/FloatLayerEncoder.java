@@ -38,6 +38,12 @@ public class FloatLayerEncoder extends Encoder {
 
   public FloatLayerEncoder(TSEncoding type, int unit, boolean roundEven) {
     super(type);
+    if (type != TSEncoding.BF16_LAYERED
+        && type != TSEncoding.FLOAT_SUBPAGE
+        && type != TSEncoding.LINEAR_RESIDUAL) {
+      throw new IllegalArgumentException(
+          org.apache.tsfile.i18n.Messages.format("error.encoding.bf16_invalid", "type"));
+    }
     if (unit < 1) {
       throw new IllegalArgumentException(
           org.apache.tsfile.i18n.Messages.format("error.encoding.bf16_invalid", "unit"));
@@ -57,9 +63,11 @@ public class FloatLayerEncoder extends Encoder {
   @Override
   public void flush(ByteArrayOutputStream out) throws IOException {
     out.write(
-        getType() == TSEncoding.FLOAT_SUBPAGE
-            ? FloatLayerFrame.encodeOriginal(bits, count, unit)
-            : FloatLayerFrame.encode(bits, count, unit, roundEven));
+        switch (getType()) {
+          case FLOAT_SUBPAGE -> FloatLayerFrame.encodeOriginal(bits, count, unit, roundEven);
+          case LINEAR_RESIDUAL -> FloatLayerFrame.encodeLinear(bits, count, unit, roundEven);
+          default -> FloatLayerFrame.encode(bits, count, unit, roundEven);
+        });
     count = 0;
   }
 
@@ -70,6 +78,7 @@ public class FloatLayerEncoder extends Encoder {
 
   @Override
   public long getMaxByteSize() {
-    return bits.length * 4L + count * 8L + 64;
+    long units = (count + (long) unit - 1) / unit;
+    return bits.length * 4L + count * 12L + units * 64 + 128;
   }
 }

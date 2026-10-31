@@ -45,7 +45,8 @@ public enum TSEncoding {
   RLBE((byte) 13),
   CAMEL((byte) 14),
   BF16_LAYERED((byte) 15),
-  FLOAT_SUBPAGE((byte) 16);
+  FLOAT_SUBPAGE((byte) 16),
+  LINEAR_RESIDUAL((byte) 17);
   private final byte type;
 
   @SuppressWarnings("java:S2386") // used by other projects
@@ -84,12 +85,14 @@ public enum TSEncoding {
     floatSet.add(TSEncoding.RLBE);
     floatSet.add(TSEncoding.BF16_LAYERED);
     floatSet.add(TSEncoding.FLOAT_SUBPAGE);
+    floatSet.add(TSEncoding.LINEAR_RESIDUAL);
 
     TYPE_SUPPORTED_ENCODINGS.put(TSDataType.FLOAT, floatSet);
 
     Set<TSEncoding> doubleSet = new HashSet<>(floatSet);
     doubleSet.remove(TSEncoding.BF16_LAYERED);
     doubleSet.remove(TSEncoding.FLOAT_SUBPAGE);
+    doubleSet.remove(TSEncoding.LINEAR_RESIDUAL);
     doubleSet.add(TSEncoding.CAMEL);
 
     TYPE_SUPPORTED_ENCODINGS.put(TSDataType.DOUBLE, doubleSet);
@@ -155,6 +158,8 @@ public enum TSEncoding {
         return TSEncoding.BF16_LAYERED;
       case 16:
         return TSEncoding.FLOAT_SUBPAGE;
+      case 17:
+        return TSEncoding.LINEAR_RESIDUAL;
       default:
         throw new IllegalArgumentException(Messages.format("error.common.invalid_input", encoding));
     }

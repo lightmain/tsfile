@@ -157,6 +157,7 @@ public class FloatType extends AbstractType {
       case RLBE -> new FloatRLBEDecoder();
       case BF16_LAYERED -> new FloatLayerDecoder();
       case FLOAT_SUBPAGE -> new FloatLayerDecoder(TSEncoding.FLOAT_SUBPAGE);
+      case LINEAR_RESIDUAL -> new FloatLayerDecoder(TSEncoding.LINEAR_RESIDUAL);
       default -> throw decoderNotFound(encoding);
     };
   }

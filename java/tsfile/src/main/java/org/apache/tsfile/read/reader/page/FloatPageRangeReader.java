@@ -23,7 +23,7 @@ import org.apache.tsfile.encoding.floatlayer.FloatLayerFrame;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-/** Read a logical row range from an uncompressed aligned BF16_LAYERED page payload. */
+/** Read a logical row range from an uncompressed aligned native FLOAT-frame payload. */
 public final class FloatPageRangeReader {
   private FloatPageRangeReader() {}
 
