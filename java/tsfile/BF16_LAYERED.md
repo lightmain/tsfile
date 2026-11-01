@@ -149,3 +149,28 @@ may use more or fewer than 16 bits per value depending on residual width;
 For ordinary finite truncate data there are no correction records: each unit
 has exactly two raw fine bytes per value plus one four-byte zero count. Existing
 parent pages, bitmaps, coarse conversion and original-value subpages are unchanged.
+
+## Grouped layers and coalesced range sessions
+
+Current LZ4 writers now emit flags 16/17. Counts, raw sizes and corrections are
+identical to flags 8/9, but all coarse unit streams precede all fine unit streams.
+Each pair retains identical present-value boundaries; compression cannot change
+unit counts. Directory offsets validate both contiguous regions independently.
+Legacy interleaved layouts remain readable. Linear residual flags 12/13 are unchanged.
+
+FloatPageRangeReader.Session accepts a caller-owned read-into callback and output
+array. It reads the aligned header, bitmap and frame header in one request, then
+the remaining directory in a second request. A contiguous interval of coarse
+units takes one data request; full recovery adds one contiguous fine request.
+Original-value subpages need only one data request. Whole-page requests use the
+same rule. Legacy interleaved coarse merges can overread fine bytes, measured
+separately. Each session reuses receive/decompression/value storage; a session
+must not be shared by concurrent requests. Directory objects and small correction
+tables still allocate; no claim of zero allocation is made.
+
+Bitmap validation occurs once per parent page per request. All-present pages
+use byte population counts and direct positions. Sparse pages construct reusable
+prefix counts within that request. No cross-request page cache is required.
+Original GORILLA subpage decoding can stop at the requested ending present value;
+the preceding prefix remains necessary. Session counters report actual requested
+bytes, read-into calls, decompressed bytes and decoded values.

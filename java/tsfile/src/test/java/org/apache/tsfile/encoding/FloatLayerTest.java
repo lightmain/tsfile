@@ -48,6 +48,78 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class FloatLayerTest {
+  @Test
+  public void testCoalescedInteriorRangesAndReuse() throws Exception {
+    int[] bits = new Random(20261102).ints(4096).toArray();
+    for (boolean rounded : new boolean[] {false, true}) {
+      for (boolean original : new boolean[] {false, true}) {
+        byte[] frame =
+            original
+                ? FloatLayerFrame.encodeOriginal(bits, bits.length, 256, rounded)
+                : FloatLayerFrame.encode(bits, bits.length, 256, rounded);
+        int base = 4 + 512;
+        byte[] page = new byte[base + frame.length];
+        ByteBuffer.wrap(page).putInt(bits.length);
+        Arrays.fill(page, 4, base, (byte) 0xff);
+        System.arraycopy(frame, 0, page, base, frame.length);
+        var session = new FloatPageRangeReader.Session(true, true);
+        int[] output = new int[4096];
+        for (int[] range : new int[][] {{779, 900}, {0, 4096}, {4090, 6}, {1001, 3}, {4096, 0}}) {
+          for (boolean coarse : new boolean[] {false, true}) {
+            session.readInto(
+                (offset, target, at, n) -> System.arraycopy(page, (int) offset, target, at, n),
+                page.length,
+                bits.length,
+                range[0],
+                range[1],
+                coarse,
+                output,
+                0);
+            assertEquals(range[1] == 0 ? 0 : (!coarse && !original ? 4 : 3), session.readCalls);
+            for (int i = 0; i < range[1]; i++) {
+              assertEquals(
+                  coarse ? FloatLayerFrame.coarse(bits[range[0] + i], rounded) : bits[range[0] + i],
+                  output[i]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testSparseCoalescedRankAndTailStop() throws Exception {
+    int[] bits = {0x3f800000, 0x40000000, 0x40400000, 0x40800000};
+    byte[] frame = FloatLayerFrame.encodeOriginal(bits, 4, 4);
+    byte[] page =
+        ByteBuffer.allocate(5 + frame.length).putInt(8).put((byte) 0b10110100).put(frame).array();
+    int[] output = new int[8];
+    var session = new FloatPageRangeReader.Session(true, true);
+    session.readInto(
+        (offset, target, at, n) -> System.arraycopy(page, (int) offset, target, at, n),
+        page.length,
+        8,
+        1,
+        4,
+        false,
+        output,
+        0);
+    assertArrayEquals(new int[] {0, bits[1], bits[2], 0}, Arrays.copyOf(output, 4));
+    assertEquals(3, session.decodedValues);
+    session.readInto(
+        (offset, target, at, n) -> {
+          throw new IOException();
+        },
+        0,
+        8,
+        0,
+        8,
+        false,
+        output,
+        0);
+    assertArrayEquals(new int[8], output);
+  }
+
   private FloatLayerFrame.ReadAt memory(byte[] frame) {
     return (offset, size) -> Arrays.copyOfRange(frame, (int) offset, (int) offset + size);
   }
@@ -69,7 +141,7 @@ public class FloatLayerTest {
                 : FloatLayerFrame.encode(bits, bits.length, 1024, round);
         assertArrayEquals(bits, FloatLayerFrame.decode(frame));
         var directory = FloatLayerFrame.directory(memory(frame), frame.length);
-        assertEquals(linear ? 12 : 8, directory.format());
+        assertEquals(linear ? 12 : 16, directory.format());
         for (int start : new int[] {0, 1019, 196607, bits.length - 7}) {
           int length = Math.min(29, bits.length - start);
           assertArrayEquals(
