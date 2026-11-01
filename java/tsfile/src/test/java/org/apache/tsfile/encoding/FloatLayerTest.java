@@ -63,6 +63,18 @@ public class FloatLayerTest {
         Arrays.fill(page, 4, base, (byte) 0xff);
         System.arraycopy(frame, 0, page, base, frame.length);
         var session = new FloatPageRangeReader.Session(true, true);
+        var wholeUnitSession = new FloatPageRangeReader.Session(true, false);
+        int[] shortOutput = new int[3];
+        wholeUnitSession.readInto(
+            (offset, target, at, n) -> System.arraycopy(page, (int) offset, target, at, n),
+            page.length,
+            bits.length,
+            1001,
+            3,
+            false,
+            shortOutput,
+            0);
+        assertArrayEquals(Arrays.copyOfRange(bits, 1001, 1004), shortOutput);
         int[] output = new int[4096];
         for (int[] range : new int[][] {{779, 900}, {0, 4096}, {4090, 6}, {1001, 3}, {4096, 0}}) {
           for (boolean coarse : new boolean[] {false, true}) {

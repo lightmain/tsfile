@@ -633,7 +633,7 @@ public final class FloatLayerFrame {
               e.coarseRaw < 0
                   ? high.getInt()
                   : Float.floatToRawIntBits(workspace.decoder.readFloat(high));
-          if (e.begin + i >= begin) {
+          if (e.begin + i >= begin && e.begin + i < end) {
             output[outputOffset + e.begin + i - start] =
                 coarseOnly ? coarse(bits, directory.roundEven) : bits;
           }
