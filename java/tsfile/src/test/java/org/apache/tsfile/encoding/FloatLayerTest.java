@@ -22,6 +22,7 @@ import org.apache.tsfile.compress.ICompressor;
 import org.apache.tsfile.encoding.decoder.Decoder;
 import org.apache.tsfile.encoding.encoder.Encoder;
 import org.apache.tsfile.encoding.encoder.FloatLayerEncoder;
+import org.apache.tsfile.encoding.floatlayer.Bf16GorillaStream;
 import org.apache.tsfile.encoding.floatlayer.FloatLayerFrame;
 import org.apache.tsfile.encoding.floatlayer.LinearResidualStream;
 import org.apache.tsfile.enums.TSDataType;
@@ -51,9 +52,16 @@ public class FloatLayerTest {
   @Test
   public void testGorillaCoarseAllWordsAndExactRecovery() throws Exception {
     int[] bits = new int[65536];
+    int[] words = new int[65536];
     Random random = new Random(20261102);
     for (int i = 0; i < bits.length; i++) {
       bits[i] = (i << 16) | (random.nextInt() & 0xffff);
+      words[i] = i;
+    }
+    var cursor = new Bf16GorillaStream.Cursor();
+    cursor.reset(ByteBuffer.wrap(Bf16GorillaStream.encode(words)));
+    for (int word : words) {
+      assertEquals(word, cursor.next());
     }
     for (boolean rounded : new boolean[] {false, true}) {
       for (int[] input :
@@ -159,7 +167,7 @@ public class FloatLayerTest {
 
   @Test
   public void testGorillaCoarseRejectsTruncatedAndInvalidWindow() throws Exception {
-    var cursor = new org.apache.tsfile.encoding.floatlayer.Bf16GorillaStream.Cursor();
+    var cursor = new Bf16GorillaStream.Cursor();
     for (byte[] bytes : new byte[][] {{0}, {0, 0, (byte) 0x80}, {0, 0, (byte) 0xff, (byte) 0xc0}}) {
       cursor.reset(ByteBuffer.wrap(bytes));
       try {
