@@ -127,7 +127,10 @@ public final class FloatPageRangeReader {
                 return Arrays.copyOfRange(meta, base + (int) offset, base + (int) offset + n);
               },
               payloadBytes - base);
-      if (directory.format() != 2 && directory.format() != 8 && directory.format() != 16) {
+      if (directory.format() != 2
+          && directory.format() != 8
+          && directory.format() != 16
+          && directory.format() != 20) {
         throw FloatLayerFrame.invalid("session-format");
       }
       if (ranks.length < rows + 1) {

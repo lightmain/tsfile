@@ -118,6 +118,7 @@ public abstract class TSEncodingBuilder {
     private final TSEncoding encoding;
     private int unit = Integer.MAX_VALUE;
     private boolean roundEven;
+    private boolean coarseGorilla;
 
     public FloatLayer() {
       this(TSEncoding.BF16_LAYERED);
@@ -135,7 +136,7 @@ public abstract class TSEncodingBuilder {
       if (type != TSDataType.FLOAT) {
         throw new UnsupportedOperationException(Messages.format(ERROR_MSG_KEY, type));
       }
-      return new FloatLayerEncoder(encoding, unit, roundEven);
+      return new FloatLayerEncoder(encoding, unit, roundEven, coarseGorilla);
     }
 
     @Override
@@ -160,6 +161,12 @@ public abstract class TSEncodingBuilder {
         throw new IllegalArgumentException(Messages.format("error.encoding.bf16_invalid", "rule"));
       }
       roundEven = rule.equals("round_nearest_even");
+      String codec = props.getOrDefault("bf16_coarse_codec", "lz4");
+      if (!codec.equals("lz4") && !codec.equals("gorilla_lz4")) {
+        throw new IllegalArgumentException(
+            Messages.format("error.encoding.bf16_invalid", "coarse-codec"));
+      }
+      coarseGorilla = codec.equals("gorilla_lz4");
     }
   }
 

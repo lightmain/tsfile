@@ -174,3 +174,31 @@ prefix counts within that request. No cross-request page cache is required.
 Original GORILLA subpage decoding can stop at the requested ending present value;
 the preceding prefix remains necessary. Session counters report actual requested
 bytes, read-into calls, decompressed bytes and decoded values.
+
+## Optional 16-bit Gorilla coarse stream
+
+The schema property `bf16_coarse_codec=gorilla_lz4` enables Gorilla XOR coding
+before LZ4 for the BF16 coarse layer. The default `lz4` keeps flags 16/17 and
+the previous byte representation. Only BF16_LAYERED accepts this option.
+New flags 20/21 indicate grouped coarse Gorilla streams and unchanged compact
+fine streams; bit zero still selects truncate or nearest-even conversion.
+Readers predating this extension reject the unfamiliar frame flags.
+
+Gorilla stores differences between adjacent binary words. This implementation
+operates on unsigned 16-bit words without conversion to numeric FP32 values.
+Each unit restarts independently: its first word occupies 16 bits. A subsequent
+equal word uses control `0`. A nonzero XOR uses control `10` followed by the
+meaningful bits in the previous nonzero window when that window encloses the
+new XOR. Otherwise control `11` is followed by four bits for the leading-zero
+count, four bits for meaningful width minus one, and the meaningful bits.
+The final byte is zero padded. The directory value count terminates the stream;
+there is no reserved word or end sentinel. LZ4 compresses these encoded bytes,
+and the coarse raw-length field records their encoded byte length.
+
+All coarse units still precede all fine units, and both layers retain the same
+present-value boundaries. A continuous coarse range takes one data read; full
+recovery adds one fine read. The range reader decodes from the first selected
+unit's beginning and stops at the last requested value. Its decoded-value
+counter includes this required prefix. Fine correction records, original
+FP32 recovery and BF16 conversion rules are unchanged. A reusable cursor and
+existing session storage avoid a new output array for every unit.

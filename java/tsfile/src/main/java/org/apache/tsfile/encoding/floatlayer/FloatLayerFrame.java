@@ -127,6 +127,12 @@ public final class FloatLayerFrame {
 
   public static byte[] encode(int[] bits, int count, int unit, boolean roundEven)
       throws IOException {
+    return encode(bits, count, unit, roundEven, false);
+  }
+
+  public static byte[] encode(
+      int[] bits, int count, int unit, boolean roundEven, boolean coarseGorilla)
+      throws IOException {
     if (count < 0 || count > bits.length || count > MAX_VALUES || unit < 1) {
       throw invalid("count/unit");
     }
@@ -138,15 +144,20 @@ public final class FloatLayerFrame {
     for (int begin = 0; begin < count; ) {
       int n = Math.min(unit, count - begin);
       ByteBuffer high = ByteBuffer.allocate(n * 2);
+      int[] words = coarseGorilla ? new int[n] : null;
       byte[] corrections = corrections(bits, begin, n, roundEven);
       ByteBuffer low = ByteBuffer.allocate(n * 2 + corrections.length);
       for (int i = 0; i < n; i++) {
         int h = coarse(bits[begin + i], roundEven);
         high.putShort((short) h);
+        if (coarseGorilla) {
+          words[i] = h;
+        }
         low.putShort((short) bits[begin + i]);
       }
       low.put(corrections);
-      byte[] highCompressed = compressor.compress(high.array());
+      byte[] highEncoded = coarseGorilla ? Bf16GorillaStream.encode(words) : high.array();
+      byte[] highCompressed = compressor.compress(highEncoded);
       byte[] lowCompressed = compressor.compress(low.array());
       int lowOffset = Math.addExact(offset, highCompressed.length);
       entries.add(
@@ -155,7 +166,7 @@ public final class FloatLayerFrame {
               n,
               offset,
               highCompressed.length,
-              n * 2,
+              highEncoded.length,
               lowOffset,
               lowCompressed.length,
               low.capacity()));
@@ -182,27 +193,24 @@ public final class FloatLayerFrame {
           .putInt(e.fineRaw);
     }
     out.put(payload.toByteArray());
-    return groupLayers(out.array());
+    return groupLayers(out.array(), entries, roundEven, coarseGorilla);
   }
 
-  private static byte[] groupLayers(byte[] frame) throws IOException {
-    Directory old =
-        directory(
-            (offset, size) -> Arrays.copyOfRange(frame, (int) offset, (int) offset + size),
-            frame.length);
+  private static byte[] groupLayers(
+      byte[] frame, List<Entry> entries, boolean roundEven, boolean coarseGorilla) {
     ByteBuffer out = ByteBuffer.allocate(frame.length);
-    int next = HEADER_BYTES + old.entries.size() * ENTRY_BYTES;
+    int next = HEADER_BYTES + entries.size() * ENTRY_BYTES;
     out.put(frame, 0, next);
-    out.putInt(4, old.roundEven ? 17 : 16);
-    for (int i = 0; i < old.entries.size(); i++) {
-      Entry e = old.entries.get(i);
+    out.putInt(4, (coarseGorilla ? 20 : 16) | (roundEven ? 1 : 0));
+    for (int i = 0; i < entries.size(); i++) {
+      Entry e = entries.get(i);
       out.putInt(HEADER_BYTES + i * ENTRY_BYTES + 8, next);
       out.position(next);
       out.put(frame, e.coarseOffset, e.coarseLength);
       next += e.coarseLength;
     }
-    for (int i = 0; i < old.entries.size(); i++) {
-      Entry e = old.entries.get(i);
+    for (int i = 0; i < entries.size(); i++) {
+      Entry e = entries.get(i);
       out.putInt(HEADER_BYTES + i * ENTRY_BYTES + 20, next);
       out.position(next);
       out.put(frame, e.fineOffset, e.fineLength);
@@ -373,7 +381,9 @@ public final class FloatLayerFrame {
             || flags == 12
             || flags == 13
             || flags == 16
-            || flags == 17)
+            || flags == 17
+            || flags == 20
+            || flags == 21)
         || count < 0
         || count > MAX_VALUES
         || unit < 1
@@ -385,7 +395,8 @@ public final class FloatLayerFrame {
     ByteBuffer table = ByteBuffer.wrap(exact(source, HEADER_BYTES, units * ENTRY_BYTES));
     List<Entry> entries = new ArrayList<>(units);
     long next = HEADER_BYTES + units * (long) ENTRY_BYTES;
-    boolean grouped = (flags & 30) == 16;
+    boolean coarseGorilla = (flags & 30) == 20;
+    boolean grouped = (flags & 30) == 16 || coarseGorilla;
     long fineNext = next;
     if (grouped) {
       for (int i = 0; i < units; i++) {
@@ -426,7 +437,7 @@ public final class FloatLayerFrame {
       }
       if ((flags & 14) == 8 || (flags & 14) == 12 || grouped) {
         rawSizesValid =
-            e.coarseRaw == n * 2
+            (coarseGorilla ? e.coarseRaw >= 2 && e.coarseRaw <= n * 4L + 2 : e.coarseRaw == n * 2)
                 && e.fineLength > 0
                 && e.fineRaw >= n * 2L + 4
                 && e.fineRaw <= n * 8L + 4;
@@ -481,6 +492,10 @@ public final class FloatLayerFrame {
     }
     int[] result = new int[length];
     if (length == 0) {
+      return result;
+    }
+    if (directory.format == 20) {
+      readRangeInto(source, directory, start, length, coarseOnly, result, 0, new Workspace(), true);
       return result;
     }
     for (Entry e : directory.entries) {
@@ -579,6 +594,7 @@ public final class FloatLayerFrame {
   public static final class Workspace {
     private byte[] high = new byte[0], low = new byte[0];
     private final SinglePrecisionDecoderV2 decoder = new SinglePrecisionDecoderV2();
+    private final Bf16GorillaStream.Cursor coarseDecoder = new Bf16GorillaStream.Cursor();
     public long decompressed, decoded;
   }
 
@@ -601,7 +617,10 @@ public final class FloatLayerFrame {
         || outputOffset > output.length - length) {
       throw invalid("range");
     }
-    if (directory.format != 2 && directory.format != 8 && directory.format != 16) {
+    if (directory.format != 2
+        && directory.format != 8
+        && directory.format != 16
+        && directory.format != 20) {
       int[] values = readRange(source, directory, start, length, coarseOnly);
       System.arraycopy(values, 0, output, outputOffset, length);
       workspace.decoded += length;
@@ -640,6 +659,10 @@ public final class FloatLayerFrame {
         }
         workspace.decoded += limit;
       } else {
+        boolean gorilla = directory.format == 20;
+        if (gorilla) {
+          workspace.coarseDecoder.reset(high);
+        }
         ByteBuffer low = null;
         Corrections corrections = null;
         if (!coarseOnly) {
@@ -658,15 +681,21 @@ public final class FloatLayerFrame {
           corrections =
               parseCorrections(Arrays.copyOfRange(workspace.low, e.count * 2, e.fineRaw), e.count);
         }
-        for (int at = begin; at < end; at++) {
-          int index = at - e.begin, h = high.getShort(index * 2) & 0xffff;
+        int decodeBegin = gorilla ? e.begin : begin;
+        int decodeEnd = gorilla && !stopAtEnd ? e.begin + e.count : end;
+        for (int at = decodeBegin; at < decodeEnd; at++) {
+          int index = at - e.begin;
+          int h = gorilla ? workspace.coarseDecoder.next() : high.getShort(index * 2) & 0xffff;
+          if (at < begin || at >= end) {
+            continue;
+          }
           output[outputOffset + at - start] =
               coarseOnly
                   ? h
                   : restoreCompact(
                       h, low.getShort(index * 2) & 0xffff, index, directory.roundEven, corrections);
         }
-        workspace.decoded += end - begin;
+        workspace.decoded += decodeEnd - decodeBegin;
       }
     }
   }
