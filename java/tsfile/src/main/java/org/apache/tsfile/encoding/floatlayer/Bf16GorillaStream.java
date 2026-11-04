@@ -27,6 +27,10 @@ public final class Bf16GorillaStream {
   private Bf16GorillaStream() {}
 
   public static byte[] encode(int[] words) {
+    return encode(words, false);
+  }
+
+  public static byte[] encode(int[] words, boolean minimizeBits) {
     Bits out = new Bits();
     int previous = 0, leading = 16, trailing = 0;
     for (int i = 0; i < words.length; i++) {
@@ -41,7 +45,12 @@ public final class Bf16GorillaStream {
           out.put(1, 1);
           int nextLeading = Integer.numberOfLeadingZeros(xor) - 16;
           int nextTrailing = Integer.numberOfTrailingZeros(xor);
-          if (leading < 16 && nextLeading >= leading && nextTrailing >= trailing) {
+          int width = 16 - nextLeading - nextTrailing;
+          int previousWidth = 16 - leading - trailing;
+          if (leading < 16
+              && nextLeading >= leading
+              && nextTrailing >= trailing
+              && (!minimizeBits || previousWidth < 8 + width)) {
             out.put(0, 1);
           } else {
             out.put(1, 1);

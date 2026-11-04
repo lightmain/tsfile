@@ -50,6 +50,120 @@ import static org.junit.Assert.fail;
 
 public class FloatLayerTest {
   @Test
+  public void testCostGorillaNarrowsAfterWideChange() throws Exception {
+    int[] words = new int[4096];
+    for (int i = 1; i < words.length; i++) {
+      words[i] = (i & 1) == 1 ? 0xffff : 0xfffe;
+    }
+    byte[] old = Bf16GorillaStream.encode(words);
+    byte[] cost = Bf16GorillaStream.encode(words, true);
+    assertTrue(cost.length < old.length / 4);
+    var cursor = new Bf16GorillaStream.Cursor();
+    cursor.reset(ByteBuffer.wrap(cost));
+    for (int word : words) {
+      assertEquals(word, cursor.next());
+    }
+    int[] allWords = new int[65536];
+    for (int i = 0; i < allWords.length; i++) {
+      allWords[i] = i;
+    }
+    cursor.reset(ByteBuffer.wrap(Bf16GorillaStream.encode(allWords, true)));
+    for (int word : allWords) {
+      assertEquals(word, cursor.next());
+    }
+  }
+
+  @Test
+  public void testAdaptiveCompleteFrameChoiceAndRecovery() throws Exception {
+    Random random = new Random(20261104);
+    int[] walk = new int[8193];
+    int high = 0x3f80;
+    for (int i = 0; i < walk.length; i++) {
+      high += random.nextInt(3) - 1;
+      walk[i] = (high << 16) | (random.nextInt() & 0xffff);
+    }
+    boolean sawPlain = false, sawGorilla = false;
+    for (boolean rounded : new boolean[] {false, true}) {
+      for (int[] input :
+          new int[][] {
+            new int[0],
+            new int[1],
+            random.ints(8193).toArray(),
+            walk,
+            {
+              0,
+              0x80000000,
+              0x7f800000,
+              0xff800000,
+              0x7f800001,
+              0xffc12345,
+              0x3f808000,
+              0x3f818000,
+              0x7f7fffff
+            }
+          }) {
+        byte[] plain = FloatLayerFrame.encode(input, input.length, 1024, rounded);
+        byte[] cost =
+            FloatLayerFrame.encode(
+                input, input.length, 1024, rounded, FloatLayerFrame.CoarseCodec.GORILLA_COST);
+        byte[] adaptive =
+            FloatLayerFrame.encode(
+                input, input.length, 1024, rounded, FloatLayerFrame.CoarseCodec.ADAPTIVE);
+        assertArrayEquals(cost.length < plain.length ? cost : plain, adaptive);
+        sawPlain |= (ByteBuffer.wrap(adaptive).getInt(4) & 30) == 16;
+        sawGorilla |= (ByteBuffer.wrap(adaptive).getInt(4) & 30) == 20;
+        for (byte[] frame : new byte[][] {cost, adaptive}) {
+          assertArrayEquals(input, FloatLayerFrame.decode(frame));
+          int rows = input.length, base = 4 + (rows + 7) / 8;
+          byte[] page = new byte[base + frame.length];
+          ByteBuffer.wrap(page).putInt(rows);
+          for (int i = 0; i < rows; i++) {
+            page[4 + i / 8] |= (byte) (1 << (7 - i % 8));
+          }
+          System.arraycopy(frame, 0, page, base, frame.length);
+          var session = new FloatPageRangeReader.Session(true, true);
+          for (int start = 0; start < rows; start += 997) {
+            int length = Math.min(1031, rows - start);
+            for (boolean coarse : new boolean[] {true, false}) {
+              int[] output = new int[length];
+              session.readInto(
+                  (offset, target, at, n) -> System.arraycopy(page, (int) offset, target, at, n),
+                  page.length,
+                  rows,
+                  start,
+                  length,
+                  coarse,
+                  output,
+                  0);
+              for (int i = 0; i < length; i++) {
+                assertEquals(
+                    coarse ? FloatLayerFrame.coarse(input[start + i], rounded) : input[start + i],
+                    output[i]);
+              }
+            }
+          }
+        }
+      }
+    }
+    assertTrue(sawPlain);
+    assertTrue(sawGorilla);
+    for (String codec : new String[] {"gorilla_cost_lz4", "adaptive_gorilla_lz4"}) {
+      MeasurementSchema schema =
+          new MeasurementSchema(
+              "value",
+              TSDataType.FLOAT,
+              TSEncoding.BF16_LAYERED,
+              CompressionType.UNCOMPRESSED,
+              Map.of("bf16_coarse_codec", codec));
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
+      Encoder encoder = schema.getValueEncoder();
+      encoder.encode(1.0f, output);
+      encoder.flush(output);
+      assertArrayEquals(new int[] {0x3f800000}, FloatLayerFrame.decode(output.toByteArray()));
+    }
+  }
+
+  @Test
   public void testGorillaCoarseAllWordsAndExactRecovery() throws Exception {
     int[] bits = new int[65536];
     int[] words = new int[65536];

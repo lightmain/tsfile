@@ -31,7 +31,7 @@ public class FloatLayerEncoder extends Encoder {
   private int count;
   private final int unit;
   private final boolean roundEven;
-  private final boolean coarseGorilla;
+  private final FloatLayerFrame.CoarseCodec coarseCodec;
 
   public FloatLayerEncoder(int unit, boolean roundEven) {
     this(TSEncoding.BF16_LAYERED, unit, roundEven);
@@ -42,6 +42,15 @@ public class FloatLayerEncoder extends Encoder {
   }
 
   public FloatLayerEncoder(TSEncoding type, int unit, boolean roundEven, boolean coarseGorilla) {
+    this(
+        type,
+        unit,
+        roundEven,
+        coarseGorilla ? FloatLayerFrame.CoarseCodec.GORILLA : FloatLayerFrame.CoarseCodec.LZ4);
+  }
+
+  public FloatLayerEncoder(
+      TSEncoding type, int unit, boolean roundEven, FloatLayerFrame.CoarseCodec coarseCodec) {
     super(type);
     if (type != TSEncoding.BF16_LAYERED
         && type != TSEncoding.FLOAT_SUBPAGE
@@ -55,11 +64,12 @@ public class FloatLayerEncoder extends Encoder {
     }
     this.unit = unit;
     this.roundEven = roundEven;
-    if (coarseGorilla && type != TSEncoding.BF16_LAYERED) {
+    if (coarseCodec == null
+        || (coarseCodec != FloatLayerFrame.CoarseCodec.LZ4 && type != TSEncoding.BF16_LAYERED)) {
       throw new IllegalArgumentException(
           org.apache.tsfile.i18n.Messages.format("error.encoding.bf16_invalid", "coarse-codec"));
     }
-    this.coarseGorilla = coarseGorilla;
+    this.coarseCodec = coarseCodec;
   }
 
   @Override
@@ -76,7 +86,7 @@ public class FloatLayerEncoder extends Encoder {
         switch (getType()) {
           case FLOAT_SUBPAGE -> FloatLayerFrame.encodeOriginal(bits, count, unit, roundEven);
           case LINEAR_RESIDUAL -> FloatLayerFrame.encodeLinear(bits, count, unit, roundEven);
-          default -> FloatLayerFrame.encode(bits, count, unit, roundEven, coarseGorilla);
+          default -> FloatLayerFrame.encode(bits, count, unit, roundEven, coarseCodec);
         });
     count = 0;
   }

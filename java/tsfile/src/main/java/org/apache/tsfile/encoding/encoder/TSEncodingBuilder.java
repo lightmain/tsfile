@@ -22,6 +22,7 @@ package org.apache.tsfile.encoding.encoder;
 import org.apache.tsfile.common.conf.TSFileConfig;
 import org.apache.tsfile.common.conf.TSFileDescriptor;
 import org.apache.tsfile.common.constant.JsonFormatConstant;
+import org.apache.tsfile.encoding.floatlayer.FloatLayerFrame.CoarseCodec;
 import org.apache.tsfile.enums.TSDataType;
 import org.apache.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.tsfile.i18n.Messages;
@@ -118,7 +119,7 @@ public abstract class TSEncodingBuilder {
     private final TSEncoding encoding;
     private int unit = Integer.MAX_VALUE;
     private boolean roundEven;
-    private boolean coarseGorilla;
+    private CoarseCodec coarseCodec = CoarseCodec.LZ4;
 
     public FloatLayer() {
       this(TSEncoding.BF16_LAYERED);
@@ -136,7 +137,7 @@ public abstract class TSEncodingBuilder {
       if (type != TSDataType.FLOAT) {
         throw new UnsupportedOperationException(Messages.format(ERROR_MSG_KEY, type));
       }
-      return new FloatLayerEncoder(encoding, unit, roundEven, coarseGorilla);
+      return new FloatLayerEncoder(encoding, unit, roundEven, coarseCodec);
     }
 
     @Override
@@ -162,11 +163,16 @@ public abstract class TSEncodingBuilder {
       }
       roundEven = rule.equals("round_nearest_even");
       String codec = props.getOrDefault("bf16_coarse_codec", "lz4");
-      if (!codec.equals("lz4") && !codec.equals("gorilla_lz4")) {
-        throw new IllegalArgumentException(
-            Messages.format("error.encoding.bf16_invalid", "coarse-codec"));
-      }
-      coarseGorilla = codec.equals("gorilla_lz4");
+      coarseCodec =
+          switch (codec) {
+            case "lz4" -> CoarseCodec.LZ4;
+            case "gorilla_lz4" -> CoarseCodec.GORILLA;
+            case "gorilla_cost_lz4" -> CoarseCodec.GORILLA_COST;
+            case "adaptive_gorilla_lz4" -> CoarseCodec.ADAPTIVE;
+            default ->
+                throw new IllegalArgumentException(
+                    Messages.format("error.encoding.bf16_invalid", "coarse-codec"));
+          };
     }
   }
 

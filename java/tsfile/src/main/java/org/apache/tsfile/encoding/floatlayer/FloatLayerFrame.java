@@ -41,6 +41,13 @@ public final class FloatLayerFrame {
 
   private FloatLayerFrame() {}
 
+  public enum CoarseCodec {
+    LZ4,
+    GORILLA,
+    GORILLA_COST,
+    ADAPTIVE
+  }
+
   @FunctionalInterface
   public interface ReadAt {
     byte[] read(long offset, int length) throws IOException;
@@ -133,9 +140,24 @@ public final class FloatLayerFrame {
   public static byte[] encode(
       int[] bits, int count, int unit, boolean roundEven, boolean coarseGorilla)
       throws IOException {
+    return encode(
+        bits, count, unit, roundEven, coarseGorilla ? CoarseCodec.GORILLA : CoarseCodec.LZ4);
+  }
+
+  public static byte[] encode(int[] bits, int count, int unit, boolean roundEven, CoarseCodec codec)
+      throws IOException {
     if (count < 0 || count > bits.length || count > MAX_VALUES || unit < 1) {
       throw invalid("count/unit");
     }
+    if (codec == null) {
+      throw invalid("coarse-codec");
+    }
+    if (codec == CoarseCodec.ADAPTIVE) {
+      byte[] plain = encode(bits, count, unit, roundEven, CoarseCodec.LZ4);
+      byte[] gorilla = encode(bits, count, unit, roundEven, CoarseCodec.GORILLA_COST);
+      return gorilla.length < plain.length ? gorilla : plain;
+    }
+    boolean coarseGorilla = codec != CoarseCodec.LZ4;
     int units = (int) ((count + (long) unit - 1) / unit);
     int offset = Math.addExact(HEADER_BYTES, Math.multiplyExact(units, ENTRY_BYTES));
     List<Entry> entries = new ArrayList<>();
@@ -156,7 +178,10 @@ public final class FloatLayerFrame {
         low.putShort((short) bits[begin + i]);
       }
       low.put(corrections);
-      byte[] highEncoded = coarseGorilla ? Bf16GorillaStream.encode(words) : high.array();
+      byte[] highEncoded =
+          coarseGorilla
+              ? Bf16GorillaStream.encode(words, codec == CoarseCodec.GORILLA_COST)
+              : high.array();
       byte[] highCompressed = compressor.compress(highEncoded);
       byte[] lowCompressed = compressor.compress(low.array());
       int lowOffset = Math.addExact(offset, highCompressed.length);

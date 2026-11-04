@@ -202,3 +202,25 @@ unit's beginning and stops at the last requested value. Its decoded-value
 counter includes this required prefix. Fine correction records, original
 FP32 recovery and BF16 conversion rules are unchanged. A reusable cursor and
 existing session storage avoid a new output array for every unit.
+
+## Cost-aware Gorilla and complete-page selection
+
+`bf16_coarse_codec=gorilla_cost_lz4` retains the 16-bit Gorilla wire format but
+changes the encoding decision. Reusing a prior meaningful window of width W
+costs 2+W bits. Starting a new window of width w costs 2+4+4+w bits. The writer
+reuses an enclosing prior window only when it is strictly cheaper; on equal
+cost it starts the narrower current window. Equal adjacent words still cost
+one bit. The reader is unchanged, and earlier readers supporting flags 20/21
+can decode the cost-aware stream.
+
+`bf16_coarse_codec=adaptive_gorilla_lz4` encodes each complete parent frame with
+both direct LZ4 and cost-aware Gorilla followed by LZ4, then selects the shorter
+complete frame. The comparison includes directory and correction bytes. Ties
+choose direct LZ4 to avoid sequential XOR decoding. Existing flags 16/17 or
+20/21 identify the selected representation, without additional per-page fields.
+This is a file-size decision; it does not predict range-read latency. Selection
+adds write-time work because both candidates are generated. Low words and
+correction rules are identical, and units retain their original boundaries.
+
+The original `gorilla_lz4` behavior and default `lz4` remain available unchanged
+for controlled comparisons. All four codec settings use the same range reader.
