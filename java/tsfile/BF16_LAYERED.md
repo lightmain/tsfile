@@ -224,3 +224,21 @@ correction rules are identical, and units retain their original boundaries.
 
 The original `gorilla_lz4` behavior and default `lz4` remain available unchanged
 for controlled comparisons. All four codec settings use the same range reader.
+
+## Reusable directly addressable linear range reads
+
+The coalesced page session also accepts compact linear frames (flags 12/13).
+It shares the two parent metadata reads, bitmap validation and row mapping
+with the LZ4 paths, then reads only each selected stream's nine-byte parameters
+and the packed residual bytes covering the requested positions. Full recovery
+also reads fine stream lengths and sparse correction records. No complete
+linear unit is fetched merely to obtain an interior range.
+
+LinearResidualStream.readRangeInto and FloatLayerFrame.readLinearRangeInto
+reuse caller output and per-reader packed-byte and value storage. Directory
+objects and correction arrays may still allocate. Counters count each source
+request and each recovered logical value; decompressed bytes are zero because
+these linear streams do not use LZ4. The on-disk representation and the earlier
+allocating query APIs are unchanged. Adjacent coarse/fine linear streams keep
+their existing interleaved layout, so selective reads are not advertised as
+a single contiguous data request across multiple linear units.

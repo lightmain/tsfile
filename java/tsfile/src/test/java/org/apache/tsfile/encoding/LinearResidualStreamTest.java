@@ -35,6 +35,54 @@ import static org.junit.Assert.fail;
 
 public class LinearResidualStreamTest {
   @Test
+  public void testReusableRangeReadsOnlyTargetBytes() throws Exception {
+    int[] values = new java.util.Random(77).ints(4097).toArray();
+    byte[] encoded = LinearResidualStream.encode(values);
+    var workspace = new LinearResidualStream.Workspace();
+    for (int[] range : new int[][] {{0, values.length}, {1001, 3}, {4096, 1}, {4097, 0}}) {
+      int[] output = new int[range[1] + 2];
+      LinearResidualStream.readRangeInto(
+          (offset, target, at, n) -> {
+            if (offset == 0) {
+              assertEquals(9, n);
+            } else {
+              assertEquals(9 + range[0] * 4L, offset);
+              assertEquals(range[1] * 4, n);
+            }
+            System.arraycopy(encoded, (int) offset, target, at, n);
+          },
+          0,
+          encoded.length,
+          values.length,
+          range[0],
+          range[1],
+          output,
+          1,
+          workspace);
+      assertArrayEquals(
+          java.util.Arrays.copyOfRange(values, range[0], range[0] + range[1]),
+          java.util.Arrays.copyOfRange(output, 1, 1 + range[1]));
+    }
+    byte[] zeroWidth = LinearResidualStream.encode(new int[] {10, 12, 14, 16});
+    int[] output = new int[2];
+    LinearResidualStream.readRangeInto(
+        (offset, target, at, n) -> {
+          assertEquals(0, offset);
+          assertEquals(9, n);
+          System.arraycopy(zeroWidth, 0, target, at, n);
+        },
+        0,
+        zeroWidth.length,
+        4,
+        1,
+        2,
+        output,
+        0,
+        workspace);
+    assertArrayEquals(new int[] {12, 14}, output);
+  }
+
+  @Test
   public void testIntegerWrapAndEveryRequestedStart() throws Exception {
     int[][] samples = {
       new int[] {Integer.MIN_VALUE},

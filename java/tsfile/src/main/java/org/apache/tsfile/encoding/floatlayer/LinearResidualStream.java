@@ -28,6 +28,67 @@ public final class LinearResidualStream {
 
   private LinearResidualStream() {}
 
+  public static final class Workspace {
+    private final byte[] header = new byte[HEADER_BYTES];
+    private byte[] packed = new byte[0];
+  }
+
+  /** Reuse caller output and read only parameters plus the requested packed-byte span. */
+  public static void readRangeInto(
+      FloatLayerFrame.ReadInto source,
+      int offset,
+      int encodedBytes,
+      int count,
+      int start,
+      int length,
+      int[] output,
+      int outputOffset,
+      Workspace workspace)
+      throws IOException {
+    if (count < 1
+        || count > (1 << 24)
+        || start < 0
+        || length < 0
+        || start > count - length
+        || offset < 0
+        || encodedBytes < HEADER_BYTES
+        || outputOffset < 0
+        || outputOffset > output.length - length) {
+      throw FloatLayerFrame.invalid("linear-range");
+    }
+    if (length == 0) {
+      return;
+    }
+    source.read(offset, workspace.header, 0, HEADER_BYTES);
+    ByteBuffer header = ByteBuffer.wrap(workspace.header);
+    int base = header.getInt(), step = header.getInt(), width = header.get() & 0xff;
+    if (width > 32 || HEADER_BYTES + (count * (long) width + 7) / 8 != encodedBytes) {
+      throw FloatLayerFrame.invalid("linear-width");
+    }
+    long firstBit = start * (long) width;
+    int firstByte = (int) (firstBit / 8);
+    int endByte = (int) (((start + (long) length) * width + 7) / 8);
+    int bytes = endByte - firstByte;
+    if (workspace.packed.length < bytes) {
+      workspace.packed = new byte[bytes];
+    }
+    if (bytes > 0) {
+      source.read((long) offset + HEADER_BYTES + firstByte, workspace.packed, 0, bytes);
+    }
+    long mask = width == 32 ? 0xffffffffL : (1L << width) - 1;
+    for (int i = 0; i < length; i++) {
+      long bit = (start + (long) i) * width - firstByte * 8L;
+      int at = (int) (bit / 8), shift = (int) (bit & 7);
+      long word = 0;
+      for (int j = 0; j < 5 && at + j < bytes; j++) {
+        word |= (workspace.packed[at + j] & 0xffL) << (8 * j);
+      }
+      int code = (int) ((word >>> shift) & mask);
+      int residual = (code >>> 1) ^ -(code & 1);
+      output[outputOffset + i] = base + step * (start + i) + residual;
+    }
+  }
+
   public static byte[] encode(int[] values) throws IOException {
     if (values.length == 0 || values.length > (1 << 24)) {
       throw FloatLayerFrame.invalid("linear-empty-unit");

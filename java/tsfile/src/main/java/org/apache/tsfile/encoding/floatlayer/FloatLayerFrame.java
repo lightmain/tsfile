@@ -53,6 +53,11 @@ public final class FloatLayerFrame {
     byte[] read(long offset, int length) throws IOException;
   }
 
+  @FunctionalInterface
+  public interface ReadInto {
+    void read(long offset, byte[] target, int targetOffset, int length) throws IOException;
+  }
+
   public record Entry(
       int begin,
       int count,
@@ -721,6 +726,105 @@ public final class FloatLayerFrame {
                       h, low.getShort(index * 2) & 0xffff, index, directory.roundEven, corrections);
         }
         workspace.decoded += decodeEnd - decodeBegin;
+      }
+    }
+  }
+
+  public static final class LinearWorkspace {
+    private final LinearResidualStream.Workspace stream = new LinearResidualStream.Workspace();
+    private final byte[] length = new byte[4];
+    private int[] high = new int[0], low = new int[0];
+    private byte[] corrections = new byte[0];
+  }
+
+  /** Compact linear streams retain exact range reads, including sparse recovery records. */
+  public static void readLinearRangeInto(
+      ReadInto source,
+      Directory directory,
+      int start,
+      int length,
+      boolean coarseOnly,
+      int[] output,
+      int outputOffset,
+      LinearWorkspace workspace)
+      throws IOException {
+    if (directory.format != 12
+        || start < 0
+        || length < 0
+        || start > directory.count - length
+        || outputOffset < 0
+        || outputOffset > output.length - length) {
+      throw invalid("linear-range");
+    }
+    if (length == 0) {
+      return;
+    }
+    if (workspace.high.length < length) {
+      workspace.high = new int[length];
+    }
+    if (!coarseOnly && workspace.low.length < length) {
+      workspace.low = new int[length];
+    }
+    for (Entry e : directory.entries) {
+      int begin = Math.max(start, e.begin), end = Math.min(start + length, e.begin + e.count);
+      if (begin >= end) {
+        continue;
+      }
+      int first = begin - e.begin, size = end - begin;
+      LinearResidualStream.readRangeInto(
+          source,
+          e.coarseOffset,
+          e.coarseLength,
+          e.count,
+          first,
+          size,
+          workspace.high,
+          0,
+          workspace.stream);
+      Corrections corrections = null;
+      if (!coarseOnly) {
+        source.read(e.fineOffset, workspace.length, 0, 4);
+        int encoded = ByteBuffer.wrap(workspace.length).getInt();
+        int correctionBytes = e.fineLength - 4 - encoded;
+        if (encoded < LinearResidualStream.HEADER_BYTES
+            || encoded > e.count * 4L + LinearResidualStream.HEADER_BYTES
+            || correctionBytes < 4
+            || correctionBytes > e.count * 6L + 4
+            || e.fineRaw != e.count * 2L + correctionBytes) {
+          throw invalid("linear-fine-size");
+        }
+        if (workspace.corrections.length != correctionBytes) {
+          workspace.corrections = new byte[correctionBytes];
+        }
+        source.read(e.fineOffset + 4L + encoded, workspace.corrections, 0, correctionBytes);
+        corrections = parseCorrections(workspace.corrections, e.count);
+        LinearResidualStream.readRangeInto(
+            source,
+            e.fineOffset + 4,
+            encoded,
+            e.count,
+            first,
+            size,
+            workspace.low,
+            0,
+            workspace.stream);
+      }
+      for (int i = 0; i < size; i++) {
+        int h = workspace.high[i];
+        if (h < Short.MIN_VALUE || h > Short.MAX_VALUE) {
+          throw invalid("linear-coarse-code");
+        }
+        int code = h & 0xffff;
+        if (coarseOnly) {
+          output[outputOffset + begin - start + i] = code;
+        } else {
+          int low = workspace.low[i];
+          if (low < 0 || low > 0xffff) {
+            throw invalid("linear-fine-code");
+          }
+          output[outputOffset + begin - start + i] =
+              restoreCompact(code, low, first + i, directory.roundEven, corrections);
+        }
       }
     }
   }

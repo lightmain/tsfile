@@ -31,9 +31,7 @@ public final class FloatPageRangeReader {
   public record Result(int[] values, boolean[] valid) {}
 
   @FunctionalInterface
-  public interface ReadInto {
-    void read(long offset, byte[] target, int targetOffset, int length) throws IOException;
-  }
+  public interface ReadInto extends FloatLayerFrame.ReadInto {}
 
   /** One instance per serial reader; buffers and bitmap ranks are reused within each request. */
   public static final class Session {
@@ -43,6 +41,7 @@ public final class FloatPageRangeReader {
         packet = new byte[0];
     private int[] ranks = new int[0], present = new int[0];
     private FloatLayerFrame.Workspace workspace = new FloatLayerFrame.Workspace();
+    private FloatLayerFrame.LinearWorkspace linearWorkspace = new FloatLayerFrame.LinearWorkspace();
     private final boolean reuse, stopAtEnd, fastRanks;
     public long requestedBytes, readCalls, decompressedBytes, decodedValues;
 
@@ -87,6 +86,7 @@ public final class FloatPageRangeReader {
         metadata = high = low = packet = new byte[0];
         ranks = present = new int[0];
         workspace = new FloatLayerFrame.Workspace();
+        linearWorkspace = new FloatLayerFrame.LinearWorkspace();
       }
       int bitmap = (rows + 7) / 8, base = 4 + bitmap;
       int prefix = base + FloatLayerFrame.HEADER_BYTES;
@@ -129,6 +129,7 @@ public final class FloatPageRangeReader {
               payloadBytes - base);
       if (directory.format() != 2
           && directory.format() != 8
+          && directory.format() != 12
           && directory.format() != 16
           && directory.format() != 20) {
         throw FloatLayerFrame.invalid("session-format");
@@ -154,6 +155,27 @@ public final class FloatPageRangeReader {
           count = (allPresent ? start + length : ranks[start + length]) - first;
       if (count == 0) {
         Arrays.fill(output, outputOffset, outputOffset + length, 0);
+        return;
+      }
+      if (present.length < count) {
+        present = new int[count];
+      }
+      if (directory.format() == 12) {
+        FloatLayerFrame.readLinearRangeInto(
+            (offset, target, at, n) -> {
+              source.read(base + offset, target, at, n);
+              requestedBytes += n;
+              readCalls++;
+            },
+            directory,
+            first,
+            count,
+            coarseOnly,
+            present,
+            0,
+            linearWorkspace);
+        decodedValues = count;
+        writeOutput(allPresent, start, length, output, outputOffset);
         return;
       }
       FloatLayerFrame.Entry firstEntry = null, lastEntry = null;
@@ -221,6 +243,11 @@ public final class FloatPageRangeReader {
           stopAtEnd);
       decompressedBytes = workspace.decompressed;
       decodedValues = workspace.decoded;
+      writeOutput(allPresent, start, length, output, outputOffset);
+    }
+
+    private void writeOutput(
+        boolean allPresent, int start, int length, int[] output, int outputOffset) {
       if (allPresent) {
         System.arraycopy(present, 0, output, outputOffset, length);
       } else {

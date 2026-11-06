@@ -50,6 +50,55 @@ import static org.junit.Assert.fail;
 
 public class FloatLayerTest {
   @Test
+  public void testLinearSessionAcrossSizesAndSparseRows() throws Exception {
+    int[] bits = new Random(20261107).ints(4097).toArray();
+    for (boolean rounded : new boolean[] {false, true}) {
+      for (int unit : new int[] {256, 512, 1024, 2048, 4096, 8192, Integer.MAX_VALUE}) {
+        byte[] frame = FloatLayerFrame.encodeLinear(bits, bits.length, unit, rounded);
+        int rows = bits.length * 2, base = 4 + (rows + 7) / 8;
+        byte[] page = new byte[base + frame.length];
+        ByteBuffer.wrap(page).putInt(rows);
+        for (int i = 0; i < bits.length; i++) {
+          int row = i * 2;
+          page[4 + row / 8] |= (byte) (1 << (7 - row % 8));
+        }
+        System.arraycopy(frame, 0, page, base, frame.length);
+        var session = new FloatPageRangeReader.Session(true, true);
+        for (int[] range :
+            new int[][] {{1001, 3}, {0, rows}, {rows - 7, 7}, {511, 3100}, {rows, 0}}) {
+          for (boolean coarse : new boolean[] {true, false}) {
+            int[] output = new int[range[1]];
+            session.readInto(
+                (offset, target, at, n) -> System.arraycopy(page, (int) offset, target, at, n),
+                page.length,
+                rows,
+                range[0],
+                range[1],
+                coarse,
+                output,
+                0);
+            assertEquals(0, session.decompressedBytes);
+            long present = 0;
+            for (int i = 0; i < output.length; i++) {
+              int row = range[0] + i;
+              int expected = 0;
+              if ((row & 1) == 0) {
+                present++;
+                expected = coarse ? FloatLayerFrame.coarse(bits[row / 2], rounded) : bits[row / 2];
+              }
+              assertEquals(expected, output[i]);
+            }
+            assertEquals(present, session.decodedValues);
+            if (coarse && range[0] == 1001 && unit >= 8192) {
+              assertTrue(session.requestedBytes <= base + 24 + 32 + 9 + 12);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @Test
   public void testCostGorillaNarrowsAfterWideChange() throws Exception {
     int[] words = new int[4096];
     for (int i = 1; i < words.length; i++) {
