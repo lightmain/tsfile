@@ -52,7 +52,7 @@ public final class BitShuffleFrame {
   }
 
   public static int degreeFromFlags(int flags) throws IOException {
-    if (flags == 16) {
+    if (flags == 16 || flags == 8) {
       return 2;
     }
     if (flags < 64 || flags > 74 || (flags & 1) != 0) {
@@ -217,6 +217,7 @@ public final class BitShuffleFrame {
     int degree = degreeFromFlags(flags);
     long meta = HEADER_BYTES + units * (long) entryBytes(degree);
     if (magic != FloatLayerFrame.MAGIC
+        || (flags == 8 && units > 1)
         || count < 0
         || count > MAX_VALUES
         || unit < 1

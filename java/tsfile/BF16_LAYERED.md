@@ -252,6 +252,9 @@ arbitrary original NaN payloads without reading the low groups in BF16 mode.
 Ordinary queries dispatch new frames through BitShuffleFrame; selective reads
 use BitShufflePageRangeReader.Session, which also accepts existing degree-2
 flags 16. Older readers reject the new flags.
+The reader also accepts legacy truncate flags 8 when the parent contains only
+one unit, whose physical high/low order is identical. This allows the existing
+no-subdivision baseline to be measured without rewriting its bytes.
 
 The selective reader reuses buffers and processes parent missing-value ranks
 once per request, using direct positions for all-present parents. It unpacks

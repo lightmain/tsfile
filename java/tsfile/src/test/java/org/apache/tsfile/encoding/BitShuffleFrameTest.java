@@ -155,6 +155,9 @@ public class BitShuffleFrameTest {
           FloatLayerFrame.encode(words, words.length, unit, false),
           BitShuffleFrame.encode(words, words.length, unit, 2));
     }
+    byte[] legacy = BitShuffleFrame.encode(words, words.length, Integer.MAX_VALUE, 2);
+    ByteBuffer.wrap(legacy).putInt(4, 8);
+    assertArrayEquals(words, BitShuffleFrame.decode(legacy));
   }
 
   @Test
