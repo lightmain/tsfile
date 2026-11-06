@@ -225,6 +225,42 @@ correction rules are identical, and units retain their original boundaries.
 The original `gorilla_lz4` behavior and default `lz4` remain available unchanged
 for controlled comparisons. All four codec settings use the same range reader.
 
+## Experimental bitshuffle degree
+
+`float_bitshuffle_degree` selects 1, 2, 4, 8, 16 or 32 groups of 32/d bits.
+The default 2 retains the existing writer and frame bytes. Other values require
+BF16_LAYERED, truncate conversion and the default LZ4 coarse codec. Degree 1
+stores original FP32 words directly with LZ4; it is a control independent of
+the existing GORILLA writer. Degrees 4 through 32 pack each fixed-position group
+most-significant-bit first across the unit's values, then LZ4-compress every
+group independently. Units are counted in present values, with zero padding
+only at the end of a non-byte-aligned group.
+
+New frame flags are 64+2*log2(d). Degree 2 continues to emit flags 16. The header
+retains the 24-byte layout. A directory unit retains the original eight 32-bit
+fields (begin, count, high offset/length/raw size, low offset/length/raw size)
+and adds d-2 compressed lengths. The final group length within each half is
+deduced from its aggregate compressed length. A degree-1 unit has no fine data.
+All high-half units precede all low-half units; within a half, groups belonging
+to one unit are contiguous. Thus a contiguous unit range still uses one high
+data request, and exact recovery adds one low data request. Individual groups
+remain independent compression blocks.
+
+For d>=2, NaN coarse conversion follows the existing canonical BF16 rule. The
+last low group appends the original sparse high-word corrections, preserving
+arbitrary original NaN payloads without reading the low groups in BF16 mode.
+Ordinary queries dispatch new frames through BitShuffleFrame; selective reads
+use BitShufflePageRangeReader.Session, which also accepts existing degree-2
+flags 16. Older readers reject the new flags.
+
+The selective reader reuses buffers and processes parent missing-value ranks
+once per request, using direct positions for all-present parents. It unpacks
+only requested output values after decompressing each intersecting unit's
+groups. Optional profiling separates LZ4 and group-to-word transposition; the
+normal path disables internal clocks. Degree 1 and degree 2 have no bit-group
+transposition. The experiment separately measures profiling overhead and the
+final conversion into the caller's BF16 output buffer.
+
 ## Reusable directly addressable linear range reads
 
 The coalesced page session also accepts compact linear frames (flags 12/13).

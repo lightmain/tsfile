@@ -830,6 +830,9 @@ public final class FloatLayerFrame {
   }
 
   public static int[] decode(byte[] frame) throws IOException {
+    if (BitShuffleFrame.isFrame(frame)) {
+      return BitShuffleFrame.decode(frame);
+    }
     ReadAt reader =
         (offset, length) -> {
           if (offset < 0 || length < 0 || offset > frame.length - (long) length) {

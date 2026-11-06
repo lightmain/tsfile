@@ -18,6 +18,7 @@
  */
 package org.apache.tsfile.encoding.encoder;
 
+import org.apache.tsfile.encoding.floatlayer.BitShuffleFrame;
 import org.apache.tsfile.encoding.floatlayer.FloatLayerFrame;
 import org.apache.tsfile.file.metadata.enums.TSEncoding;
 
@@ -32,6 +33,7 @@ public class FloatLayerEncoder extends Encoder {
   private final int unit;
   private final boolean roundEven;
   private final FloatLayerFrame.CoarseCodec coarseCodec;
+  private final int bitshuffleDegree;
 
   public FloatLayerEncoder(int unit, boolean roundEven) {
     this(TSEncoding.BF16_LAYERED, unit, roundEven);
@@ -51,6 +53,15 @@ public class FloatLayerEncoder extends Encoder {
 
   public FloatLayerEncoder(
       TSEncoding type, int unit, boolean roundEven, FloatLayerFrame.CoarseCodec coarseCodec) {
+    this(type, unit, roundEven, coarseCodec, 2);
+  }
+
+  public FloatLayerEncoder(
+      TSEncoding type,
+      int unit,
+      boolean roundEven,
+      FloatLayerFrame.CoarseCodec coarseCodec,
+      int bitshuffleDegree) {
     super(type);
     if (type != TSEncoding.BF16_LAYERED
         && type != TSEncoding.FLOAT_SUBPAGE
@@ -70,6 +81,16 @@ public class FloatLayerEncoder extends Encoder {
           org.apache.tsfile.i18n.Messages.format("error.encoding.bf16_invalid", "coarse-codec"));
     }
     this.coarseCodec = coarseCodec;
+    if (!BitShuffleFrame.supportedDegree(bitshuffleDegree)
+        || (bitshuffleDegree != 2
+            && (type != TSEncoding.BF16_LAYERED
+                || roundEven
+                || coarseCodec != FloatLayerFrame.CoarseCodec.LZ4))) {
+      throw new IllegalArgumentException(
+          org.apache.tsfile.i18n.Messages.format(
+              "error.encoding.bf16_invalid", "bitshuffle-degree"));
+    }
+    this.bitshuffleDegree = bitshuffleDegree;
   }
 
   @Override
@@ -82,6 +103,11 @@ public class FloatLayerEncoder extends Encoder {
 
   @Override
   public void flush(ByteArrayOutputStream out) throws IOException {
+    if (bitshuffleDegree != 2) {
+      out.write(BitShuffleFrame.encode(bits, count, unit, bitshuffleDegree));
+      count = 0;
+      return;
+    }
     out.write(
         switch (getType()) {
           case FLOAT_SUBPAGE -> FloatLayerFrame.encodeOriginal(bits, count, unit, roundEven);
@@ -99,6 +125,10 @@ public class FloatLayerEncoder extends Encoder {
   @Override
   public long getMaxByteSize() {
     long units = (count + (long) unit - 1) / unit;
-    return bits.length * 4L + count * 12L + units * 64 + 128;
+    return bits.length * 4L
+        + count * 12L
+        + units
+            * Math.max(64, BitShuffleFrame.entryBytes(bitshuffleDegree) + bitshuffleDegree * 16L)
+        + 128;
   }
 }

@@ -120,6 +120,7 @@ public abstract class TSEncodingBuilder {
     private int unit = Integer.MAX_VALUE;
     private boolean roundEven;
     private CoarseCodec coarseCodec = CoarseCodec.LZ4;
+    private int bitshuffleDegree = 2;
 
     public FloatLayer() {
       this(TSEncoding.BF16_LAYERED);
@@ -137,7 +138,7 @@ public abstract class TSEncodingBuilder {
       if (type != TSDataType.FLOAT) {
         throw new UnsupportedOperationException(Messages.format(ERROR_MSG_KEY, type));
       }
-      return new FloatLayerEncoder(encoding, unit, roundEven, coarseCodec);
+      return new FloatLayerEncoder(encoding, unit, roundEven, coarseCodec, bitshuffleDegree);
     }
 
     @Override
@@ -162,6 +163,12 @@ public abstract class TSEncodingBuilder {
         throw new IllegalArgumentException(Messages.format("error.encoding.bf16_invalid", "rule"));
       }
       roundEven = rule.equals("round_nearest_even");
+      try {
+        bitshuffleDegree = Integer.parseInt(props.getOrDefault("float_bitshuffle_degree", "2"));
+      } catch (NumberFormatException e) {
+        throw new IllegalArgumentException(
+            Messages.format("error.encoding.bf16_invalid", "bitshuffle-degree"));
+      }
       String codec = props.getOrDefault("bf16_coarse_codec", "lz4");
       coarseCodec =
           switch (codec) {
