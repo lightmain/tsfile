@@ -34,7 +34,8 @@ public final class BitShufflePageRangeReader {
     private int[] ranks = new int[0], present = new int[0];
     private final BitShuffleFrame.Workspace workspace = new BitShuffleFrame.Workspace();
     public long requestedBytes, readCalls, decompressedBytes, decodedValues;
-    public long transposeNs, decompressNs;
+    public long transposeNs, decompressNs, extractNs, sourceNs, parentNs, placementNs;
+    private long frameNs;
 
     public void readInto(
         FloatLayerFrame.ReadInto source,
@@ -49,6 +50,44 @@ public final class BitShufflePageRangeReader {
         throws IOException {
       requestedBytes =
           readCalls = decompressedBytes = decodedValues = transposeNs = decompressNs = 0;
+      extractNs = sourceNs = parentNs = placementNs = frameNs = 0;
+      long timer = profile ? System.nanoTime() : 0;
+      try {
+        readInternal(
+            source, payloadBytes, rows, start, length, coarseOnly, output, outputOffset, profile);
+      } finally {
+        if (profile) {
+          parentNs = System.nanoTime() - timer - sourceNs - frameNs - placementNs;
+        }
+      }
+    }
+
+    private void readSource(
+        FloatLayerFrame.ReadInto source,
+        long offset,
+        byte[] target,
+        int at,
+        int length,
+        boolean profile)
+        throws IOException {
+      long timer = profile ? System.nanoTime() : 0;
+      source.read(offset, target, at, length);
+      if (profile) {
+        sourceNs += System.nanoTime() - timer;
+      }
+    }
+
+    private void readInternal(
+        FloatLayerFrame.ReadInto source,
+        int payloadBytes,
+        int rows,
+        int start,
+        int length,
+        boolean coarseOnly,
+        int[] output,
+        int outputOffset,
+        boolean profile)
+        throws IOException {
       if (rows < 0
           || rows > (1 << 24)
           || start < 0
@@ -72,7 +111,7 @@ public final class BitShufflePageRangeReader {
       if (metadata.length < prefix) {
         metadata = new byte[prefix];
       }
-      source.read(0, metadata, 0, prefix);
+      readSource(source, 0, metadata, 0, prefix, profile);
       requestedBytes += prefix;
       readCalls++;
       ByteBuffer header = ByteBuffer.wrap(metadata);
@@ -89,7 +128,7 @@ public final class BitShufflePageRangeReader {
         metadata = Arrays.copyOf(metadata, (int) size);
       }
       if (size > prefix) {
-        source.read(prefix, metadata, prefix, (int) size - prefix);
+        readSource(source, prefix, metadata, prefix, (int) size - prefix, profile);
         requestedBytes += size - prefix;
         readCalls++;
       }
@@ -136,7 +175,7 @@ public final class BitShufflePageRangeReader {
       if (high.length < highLength) {
         high = new byte[highLength];
       }
-      source.read(base + (long) highStart, high, 0, highLength);
+      readSource(source, base + (long) highStart, high, 0, highLength, profile);
       requestedBytes += highLength;
       readCalls++;
       int lowStart = 0;
@@ -146,7 +185,7 @@ public final class BitShufflePageRangeReader {
         if (low.length < lowLength) {
           low = new byte[lowLength];
         }
-        source.read(base + (long) lowStart, low, 0, lowLength);
+        readSource(source, base + (long) lowStart, low, 0, lowLength, profile);
         requestedBytes += lowLength;
         readCalls++;
       }
@@ -154,6 +193,7 @@ public final class BitShufflePageRangeReader {
         present = new int[count];
       }
       workspace.resetCounters();
+      long timer = profile ? System.nanoTime() : 0;
       BitShuffleFrame.readRangeInto(
           directory,
           high,
@@ -167,10 +207,15 @@ public final class BitShufflePageRangeReader {
           0,
           workspace,
           profile);
+      if (profile) {
+        frameNs = System.nanoTime() - timer;
+      }
       decompressedBytes = workspace.decompressedBytes;
       decodedValues = workspace.decodedValues;
       transposeNs = workspace.transposeNs;
       decompressNs = workspace.decompressNs;
+      extractNs = workspace.extractNs;
+      timer = profile ? System.nanoTime() : 0;
       if (allPresent) {
         System.arraycopy(present, 0, output, outputOffset, length);
       } else {
@@ -178,6 +223,9 @@ public final class BitShufflePageRangeReader {
         for (int i = 0; i < length; i++) {
           output[outputOffset + i] = ranks[start + i] == ranks[start + i + 1] ? 0 : present[at++];
         }
+      }
+      if (profile) {
+        placementNs = System.nanoTime() - timer;
       }
     }
   }

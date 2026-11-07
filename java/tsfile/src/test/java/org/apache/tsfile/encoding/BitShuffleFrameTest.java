@@ -141,6 +141,19 @@ public class BitShuffleFrameTest {
             if (!profile || degree < 4) {
               assertEquals(0, session.transposeNs);
             }
+            if (!profile) {
+              assertEquals(0, session.extractNs);
+              assertEquals(0, session.parentNs);
+              assertEquals(0, session.sourceNs);
+              assertEquals(0, session.placementNs);
+            } else {
+              assertTrue(session.parentNs >= 0);
+              assertTrue(session.sourceNs >= 0);
+              assertTrue(session.placementNs >= 0);
+              if (degree >= 4) {
+                assertEquals(session.extractNs, session.transposeNs);
+              }
+            }
           }
         }
       }

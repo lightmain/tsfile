@@ -291,10 +291,10 @@ public final class BitShuffleFrame {
 
   public static final class Workspace {
     private final byte[][] planes = new byte[32][];
-    public long decompressedBytes, decodedValues, transposeNs, decompressNs;
+    public long decompressedBytes, decodedValues, transposeNs, decompressNs, extractNs;
 
     public void resetCounters() {
-      decompressedBytes = decodedValues = transposeNs = decompressNs = 0;
+      decompressedBytes = decodedValues = transposeNs = decompressNs = extractNs = 0;
     }
   }
 
@@ -360,7 +360,7 @@ public final class BitShuffleFrame {
       if (profile) {
         workspace.decompressNs += System.nanoTime() - timer;
       }
-      timer = profile && degree >= 4 ? System.nanoTime() : 0;
+      timer = profile ? System.nanoTime() : 0;
       for (int index = begin - unit.begin; index < end - unit.begin; index++) {
         int result = 0;
         if (degree == 1) {
@@ -392,8 +392,12 @@ public final class BitShuffleFrame {
         }
         output[outputOffset + unit.begin + index - start] = result;
       }
-      if (profile && degree >= 4) {
-        workspace.transposeNs += System.nanoTime() - timer;
+      if (profile) {
+        long elapsed = System.nanoTime() - timer;
+        workspace.extractNs += elapsed;
+        if (degree >= 4) {
+          workspace.transposeNs += elapsed;
+        }
       }
       if (!coarseOnly && degree > 1) {
         ByteBuffer corrections = ByteBuffer.wrap(workspace.planes[degree - 1]);
